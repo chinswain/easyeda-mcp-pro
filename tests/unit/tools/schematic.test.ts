@@ -1007,9 +1007,11 @@ describe('Schematic Tools', () => {
       primitiveId: 'prim-1',
       property: { value: '10k' },
     });
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       success: true,
       result: true,
+      // `true` is not a snapshot, so the write cannot be proven either way.
+      verification: { unverifiable_reason: expect.any(String) },
     });
   });
 

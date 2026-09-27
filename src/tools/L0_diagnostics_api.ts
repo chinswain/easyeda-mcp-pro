@@ -8,6 +8,11 @@ import {
   revertDispatcher,
 } from '../bridge/hotswap.js';
 import { fetchComponentPins } from './schematic-helpers.js';
+import {
+  unappliedWriteMessage,
+  verifyPropertyWrite,
+  writeVerificationSchema,
+} from './write-verify.js';
 
 const apiCallInputSchema = z.object({
   path: z.string().regex(/^[A-Za-z]+_[A-Za-z0-9]+\.[A-Za-z][A-Za-z0-9_]*$/),
@@ -20,6 +25,40 @@ const writeMethodPattern =
 
 function requiresWriteConfirmation(path: string): boolean {
   return writeMethodPattern.test(path);
+}
+
+/**
+ * `<Class>.modify(primitiveId, property)` is the one passthrough shape whose
+ * effect can be checked cheaply: the same class exposes `get(primitiveId)`.
+ * EasyEDA drops property keys it does not recognise without complaining, so an
+ * unverified modify is indistinguishable from a no-op. Other api.call paths
+ * stay unverified.
+ */
+function modifyVerificationTarget(
+  path: string,
+  args: unknown[],
+): { readPath: string; primitiveId: string; property: Record<string, unknown> } | undefined {
+  if (!/\.modify$/i.test(path)) return undefined;
+  const [primitiveId, property] = args;
+  if (typeof primitiveId !== 'string' || primitiveId.length === 0) return undefined;
+  if (typeof property !== 'object' || property === null || Array.isArray(property)) return undefined;
+  return {
+    readPath: `${path.slice(0, path.lastIndexOf('.'))}.get`,
+    primitiveId,
+    property: property as Record<string, unknown>,
+  };
+}
+
+async function readPrimitiveState(
+  ctx: ToolContext,
+  readPath: string,
+  primitiveId: string,
+): Promise<Record<string, unknown> | undefined> {
+  const response = await ctx.bridge.call('api.call', { path: readPath, args: [primitiveId] });
+  const state = (response as { result?: { state?: unknown } } | undefined)?.result?.state;
+  return typeof state === 'object' && state !== null && !Array.isArray(state)
+    ? (state as Record<string, unknown>)
+    : undefined;
 }
 
 type LiveSmokeStep = {
@@ -294,7 +333,9 @@ function registerDiagnosticsApi(
     name: 'easyeda_api_call',
     title: 'Call EasyEDA API',
     description:
-      'Controlled call to a documented EasyEDA class method by path, for example SCH_PrimitiveWire.getAll. This is not raw JavaScript execution.',
+      'Controlled call to a documented EasyEDA class method by path, for example SCH_PrimitiveWire.getAll. ' +
+      'This is not raw JavaScript execution. A modify call is read back and fails with WRITE_NOT_PERSISTED ' +
+      'when the runtime ignored the requested keys; property bags are camelCase (supplierId, not SupplierId).',
     profile: 'full',
     evidence: ['runtime-probe', 'pro-api-types', 'official-docs'],
     risk: 'high',
@@ -313,6 +354,8 @@ function registerDiagnosticsApi(
       resolvedPath: z.string().optional(),
       result: z.unknown().optional(),
       error: z.string().optional(),
+      error_code: z.string().optional(),
+      verification: writeVerificationSchema.optional(),
       requires_confirmation: z.boolean().optional(),
     }),
     handler: async (ctx: ToolContext, params: unknown) => {
@@ -326,15 +369,49 @@ function registerDiagnosticsApi(
         };
       }
 
+      const target = modifyVerificationTarget(path, args);
+      let before: Record<string, unknown> | undefined;
+      let readBackFailure: string | undefined;
+      if (target) {
+        try {
+          before = await readPrimitiveState(ctx, target.readPath, target.primitiveId);
+        } catch (err) {
+          readBackFailure = `pre-write read-back failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+
       try {
         const result = await ctx.bridge.call('api.call', { path, args });
         const data = result as { path?: string; resolvedPath?: string; result?: unknown };
-        return {
+        const response = {
           ok: true,
           path: data.path ?? path,
           resolvedPath: data.resolvedPath,
           result: data.result,
         };
+        if (!target) return response;
+
+        let after: Record<string, unknown> | undefined;
+        try {
+          after = await readPrimitiveState(ctx, target.readPath, target.primitiveId);
+        } catch (err) {
+          readBackFailure ??= `post-write read-back failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+
+        const verification = verifyPropertyWrite(target.property, before, after);
+        if (readBackFailure && verification.unverifiable_reason) {
+          verification.unverifiable_reason = readBackFailure;
+        }
+        if (verification.unapplied.length > 0) {
+          return {
+            ...response,
+            ok: false,
+            error_code: 'WRITE_NOT_PERSISTED',
+            error: unappliedWriteMessage(path, verification),
+            verification,
+          };
+        }
+        return { ...response, verification };
       } catch (err) {
         return {
           ok: false,
