@@ -1,4 +1,10 @@
 import { z } from 'zod';
+import {
+  componentRefErrorFields,
+  componentRefInput,
+  componentRefRefine,
+  resolveComponentRef,
+} from './component-ref.js';
 import { type ToolDefinition, type ToolContext } from './types.js';
 import { type EnvConfig } from '../config/env.js';
 import { readStable } from '../live/readback.js';
@@ -91,6 +97,40 @@ const readConsistencySchema = z.object({
 });
 
 const stableReadOptions = { attempts: 4, delayMs: 80 } as const;
+
+const schematicComponentKindSchema = z.enum([
+  'part',
+  'power-symbol',
+  'power-flag',
+  'net-label',
+  'net-port',
+  'sheet-frame',
+  'annotation',
+  'helper',
+  'unknown',
+]);
+
+/** Default projection for easyeda_schematic_components; everything else needs fields: ["all"]. */
+const COMPACT_COMPONENT_FIELDS = [
+  'primitiveId',
+  'reference',
+  'value',
+  'footprint',
+  'lcsc',
+  'x',
+  'y',
+  'rotation',
+  'component_kind',
+];
+
+/** Exact or glob (`*`, `?`) designator match, case-insensitive. */
+export function globToRegExp(pattern: string): RegExp {
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.');
+  return new RegExp(`^${escaped}$`, 'i');
+}
 
 function schematicReadUnavailable(error: unknown) {
   return {
@@ -282,9 +322,22 @@ function registerSchematicReadTools(
           netName?: string;
           nodes?: Array<{ component?: string; pin?: string }>;
         }>;
+        if (!Array.isArray(nets) || nets.length === 0) {
+          return {
+            project_id: projectId,
+            nets: [],
+            total: 0,
+            not_available: true,
+            error_code: 'EMPTY_READ',
+            error:
+              'schematic.listNets returned no nets. Either the focused document is not a schematic page or the netlist has not been built; open the schematic tab and retry.',
+            read_consistency: { stable: observation.stable, attempts: observation.attempts },
+            ...readScopeResult(scope, 'schematic.listNets'),
+          };
+        }
         return {
           project_id: projectId,
-          nets: (nets ?? []).map((n) => {
+          nets: nets.map((n) => {
             const normalized = normalizeNetName(n.netName ?? '');
             return {
               net_name: n.netName ?? '',
@@ -300,7 +353,7 @@ function registerSchematicReadTools(
               })),
             };
           }),
-          total: nets?.length ?? 0,
+          total: nets.length,
           read_consistency: {
             stable: observation.stable,
             attempts: observation.attempts,
@@ -338,6 +391,21 @@ function registerSchematicReadTools(
     inputSchema: withSchematicReadScope(
       z.object({
         projectId: z.string().describe('The project/schematic ID'),
+        reference: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe('Exact designator (USB2) or glob (R*, C1?). Case-insensitive.'),
+        kind: schematicComponentKindSchema
+          .optional()
+          .describe('Only components of this component_kind.'),
+        fields: z
+          .array(z.string())
+          .optional()
+          .describe(
+            `Fields to return. Default compact set: ${COMPACT_COMPONENT_FIELDS.join(', ')}. Use ["all"] for everything.`,
+          ),
         limit: z.coerce.number().int().min(1).max(500).default(100),
         offset: z.coerce.number().int().min(0).default(0),
       }),
@@ -347,9 +415,9 @@ function registerSchematicReadTools(
       components: z.array(
         z.object({
           primitiveId: z.string().optional(),
-          reference: z.string(),
-          value: z.string(),
-          footprint: z.string(),
+          reference: z.string().optional(),
+          value: z.string().optional(),
+          footprint: z.string().optional(),
           lcsc: z.string().optional(),
           manufacturer: z.string().optional(),
           manufacturerId: z.string().optional(),
@@ -361,26 +429,23 @@ function registerSchematicReadTools(
           x: z.number().optional(),
           y: z.number().optional(),
           rotation: z.number().optional(),
-          component_kind: z.enum([
-            'part',
-            'power-symbol',
-            'power-flag',
-            'net-label',
-            'net-port',
-            'sheet-frame',
-            'annotation',
-            'helper',
-            'unknown',
-          ]),
-          bom_eligible: z.boolean(),
-          electrical_eligible: z.boolean(),
-          annotated: z.boolean(),
-          symbol_source: z.enum(['native', 'imported', 'unknown']),
-          raw_value: z.string(),
-          raw_footprint: z.string(),
+          component_kind: schematicComponentKindSchema.optional(),
+          bom_eligible: z.boolean().optional(),
+          electrical_eligible: z.boolean().optional(),
+          annotated: z.boolean().optional(),
+          symbol_source: z.enum(['native', 'imported', 'unknown']).optional(),
+          raw_value: z.string().optional(),
+          raw_footprint: z.string().optional(),
         }),
       ),
+      /** Matches after filtering, before pagination. */
       total: z.number().int().nonnegative(),
+      next_offset: z.number().int().nonnegative().nullable(),
+      filters_applied: z.object({
+        reference: z.string().optional(),
+        kind: z.string().optional(),
+        fields: z.array(z.string()),
+      }),
       read_consistency: readConsistencySchema.optional(),
       read_scope: readScopeOutputSchema.optional(),
       not_available: z.boolean().optional(),
@@ -389,11 +454,17 @@ function registerSchematicReadTools(
       error: z.string().optional(),
     }),
     handler: async (ctx: ToolContext, params: unknown) => {
-      const { projectId, limit, offset } = params as {
+      const { projectId, limit, offset, reference, kind, fields } = params as {
         projectId: string;
         limit: number;
         offset: number;
+        reference?: string;
+        kind?: string;
+        fields?: string[];
       };
+      const wantAll = fields?.includes('all') ?? false;
+      const wanted = new Set(wantAll ? [] : fields?.length ? fields : COMPACT_COMPONENT_FIELDS);
+      const filtersApplied = { reference, kind, fields: wantAll ? ['all'] : [...wanted] };
       const { scope, pageUuid } = schematicReadScopeInputSchema.parse(params);
       try {
         assertSchematicReadScopeSupported(
@@ -404,12 +475,13 @@ function registerSchematicReadTools(
           'page-attributed-component-read',
         );
         const componentScope = componentReadScope(scope);
+        // ponytail: fetch the whole list and filter here; 5000 covers any real board.
         const observation = await readStable(
           () =>
             ctx.bridge.call('schematic.listComponents', {
               projectId,
-              limit,
-              offset,
+              limit: 5000,
+              offset: 0,
               ...componentScope.bridgeParams,
             }),
           stableReadOptions,
@@ -436,9 +508,10 @@ function registerSchematicReadTools(
           }>;
         };
         const comps = items ?? [];
-        return {
-          project_id: projectId,
-          components: comps.map((c, index) => {
+        void bridgeTotal;
+        const refMatch = reference ? globToRegExp(reference) : undefined;
+        const all = comps
+          .map((c, index) => {
             const normalized = normalizeSchematicComponent(c, index);
             return {
               primitiveId: c.primitiveId,
@@ -464,8 +537,22 @@ function registerSchematicReadTools(
               raw_value: normalized.rawValue,
               raw_footprint: normalized.rawFootprint,
             };
-          }),
-          total: bridgeTotal ?? comps.length,
+          })
+          .filter((c) => (refMatch ? refMatch.test(c.reference) : true))
+          .filter((c) => (kind ? c.component_kind === kind : true));
+        const page = all.slice(offset, offset + limit);
+        return {
+          project_id: projectId,
+          components: page.map((c) =>
+            wantAll
+              ? c
+              : (Object.fromEntries(Object.entries(c).filter(([k]) => wanted.has(k))) as Partial<
+                  typeof c
+                >),
+          ),
+          total: all.length,
+          next_offset: offset + limit < all.length ? offset + limit : null,
+          filters_applied: filtersApplied,
           read_consistency: {
             stable: observation.stable,
             attempts: observation.attempts,
@@ -477,6 +564,8 @@ function registerSchematicReadTools(
           project_id: projectId,
           components: [],
           total: 0,
+          next_offset: null,
+          filters_applied: filtersApplied,
           ...schematicReadUnavailable(err),
         };
       }
@@ -664,12 +753,26 @@ function registerSchematicReadTools(
             node_count: 0,
             nodes: [],
             not_available: true,
+            error_code: 'NET_NOT_FOUND',
+            error: `Net "${netName}" is not in the focused schematic. Use easyeda_schematic_nets to list names.`,
+          };
+        }
+        if (!net.nodes?.length) {
+          return {
+            project_id: projectId,
+            net_name: net.netName ?? netName,
+            node_count: 0,
+            nodes: [],
+            not_available: true,
+            error_code: 'NET_EMPTY',
+            error: `Net "${netName}" exists but no pins were read for it; the netlist may be stale. Rebuild the netlist and retry.`,
+            ...readScopeResult(scope, 'schematic.getNetDetail'),
           };
         }
         return {
           project_id: projectId,
           net_name: net.netName ?? netName,
-          node_count: net.nodes?.length ?? 0,
+          node_count: net.nodes.length,
           nodes: (net.nodes ?? []).map((nd) => ({
             component_ref: nd.component ?? '',
             pin: nd.pin ?? '',
@@ -1086,11 +1189,10 @@ function registerSchematicReadTools(
       readOnlyHint: true,
       idempotentHint: true,
     },
-    inputSchema: z.object({
-      primitiveId: z.string(),
-    }),
+    inputSchema: z.object(componentRefInput).refine(...componentRefRefine),
     outputSchema: z.object({
       primitiveId: z.string(),
+      reference: z.string().optional(),
       pins: z.array(
         z.object({
           primitiveId: z.string().optional(),
@@ -1106,18 +1208,23 @@ function registerSchematicReadTools(
       ),
       success: z.boolean(),
       error: z.string().optional(),
+      error_code: z.string().optional(),
+      hint: z.string().optional(),
     }),
     handler: async (ctx: ToolContext, params: unknown) => {
-      const { primitiveId } = params as { primitiveId: string };
+      const ref = params as { primitiveId?: string; reference?: string };
+      let primitiveId = ref.primitiveId ?? '';
       try {
+        primitiveId = await resolveComponentRef(ctx, 'schematic', ref);
         const pins = await fetchComponentPins(ctx, primitiveId);
-        return { primitiveId, pins, success: true };
+        return { primitiveId, reference: ref.reference, pins, success: true };
       } catch (err) {
         return {
           primitiveId,
+          reference: ref.reference,
           pins: [],
           success: false,
-          error: err instanceof Error ? err.message : String(err),
+          ...componentRefErrorFields(err),
         };
       }
     },

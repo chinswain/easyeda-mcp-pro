@@ -312,7 +312,7 @@ describe('Remote Relay MCP HTTP integration', () => {
       sessionId: harness.remoteSessionId,
       toolName: 'schematic.listComponents',
       riskLevel: 'read',
-      input: { projectId: 'project-http', limit: 100, offset: 0 },
+      input: { projectId: 'project-http', limit: 5000, offset: 0 },
     });
 
     const writeArguments = {

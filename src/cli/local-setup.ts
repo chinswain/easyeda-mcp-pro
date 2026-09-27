@@ -17,6 +17,11 @@ import {
 } from '../config/env.js';
 import { parsePortScanSpec } from '../bridge/manager.js';
 import {
+  findStaleBridgeListeners,
+  killStaleListeners,
+  type StaleListener,
+} from '../bridge/stale-listeners.js';
+import {
   evaluateNodeRuntime,
   evaluatePnpmRuntime,
   PINNED_NODE_VERSION,
@@ -114,6 +119,8 @@ export interface DoctorReport {
   envIssues: string[];
   bridgeHost: string;
   bridgePorts: DoctorPortResult[];
+  /** Listeners in the scan range owned by other processes; `orphan` ones can be stopped with --fix. */
+  staleListeners?: StaleListener[];
   toolCounts?: { profile: string; enabled: number; total: number };
   vendorsConfigured: Record<string, boolean>;
   vendorDiagnostics?: Record<string, VendorDoctorStatus>;
@@ -632,6 +639,10 @@ export async function createDoctorReport(
       reachable: await checkTcpPort(bridgeHost, port),
     });
   }
+  const staleListeners = await findStaleBridgeListeners({
+    host: bridgeHost,
+    ports: bridgePorts.filter((p) => p.reachable).map((p) => p.port),
+  }).catch(() => []);
 
   let pnpmVersion: string | null = null;
   if (pnpmRequired) {
@@ -683,6 +694,7 @@ export async function createDoctorReport(
     envIssues: env.issues,
     bridgeHost,
     bridgePorts,
+    staleListeners,
     toolCounts,
     vendorsConfigured,
     vendorDiagnostics,
@@ -769,6 +781,14 @@ function buildSuggestedFixes(report: DoctorReport): string[] {
     );
   }
 
+  const orphans = (report.staleListeners ?? []).filter((l) => l.orphan);
+  if (orphans.length) {
+    fixes.push(
+      `Orphaned bridge listener(s): ${orphans.map((l) => `pid ${l.pid} on port ${l.port}`).join(', ')} (parent process is gone).`,
+      '  Fix: `easyeda-mcp-pro --doctor --fix` stops them so the next MCP client can own the first scanned port.',
+    );
+  }
+
   if (report.remoteBackend?.warnings.length) {
     fixes.push('Remote Relay readiness warnings:');
     for (const warning of report.remoteBackend.warnings) {
@@ -809,7 +829,10 @@ export function doctorExitCode(report: DoctorReport): 0 | 1 {
     : 1;
 }
 
-export function formatDoctorReport(report: DoctorReport, options?: { fix?: boolean }): string {
+export function formatDoctorReport(
+  report: DoctorReport,
+  options?: { fix?: boolean; killed?: number[] },
+): string {
   const reachable = report.bridgePorts.find((port) => port.reachable);
   const bridgeStatus = reachable
     ? `reachable on ${report.bridgeHost}:${reachable.port}`
@@ -876,11 +899,25 @@ export function formatDoctorReport(report: DoctorReport, options?: { fix?: boole
       : 'Bridge server is not running yet. This is normal until your MCP client starts easyeda-mcp-pro.',
   ];
 
+  if (report.staleListeners?.length) {
+    lines.push(
+      `Other bridge listeners: ${report.staleListeners
+        .map((l) => `port ${l.port} pid ${l.pid}${l.orphan ? ' (orphan)' : ''}`)
+        .join(', ')}`,
+    );
+  }
+
   if (options?.fix) {
     lines.push('', 'Suggested fixes:', ...buildSuggestedFixes(report));
+    if (options.killed?.length) lines.push(`Stopped orphaned listener pid(s): ${options.killed.join(', ')}`);
   }
 
   return lines.join('\n');
+}
+
+/** `doctor --fix` action: stop orphaned bridge listeners. Returns the pids signalled. */
+export function applyDoctorFixes(report: DoctorReport): number[] {
+  return killStaleListeners(report.staleListeners ?? []);
 }
 
 export function formatHelp(): string {
@@ -902,7 +939,7 @@ export function formatHelp(): string {
     '',
     '  easyeda-mcp-pro --setup-local                Print MCP client config (legacy)',
     '  easyeda-mcp-pro --doctor [--fix]              Check runtime, package, and bridge status',
-    '    --fix     Print suggested fixes for each detected failure (no files are changed)',
+    '    --fix     Print suggested fixes and stop orphaned bridge listeners (no files are changed)',
     '  easyeda-mcp-pro --version                    Print package version',
     '',
     'Examples:',

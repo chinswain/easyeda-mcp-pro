@@ -410,7 +410,18 @@ describe('Schematic Tools', () => {
       node_count: 0,
       nodes: [],
       not_available: true,
+      error_code: 'NET_NOT_FOUND',
     });
+    expect(result?.error).toMatch(/not in the focused schematic/);
+  });
+
+  it('easyeda_schematic_net_detail flags a net with zero nodes instead of reporting success', async () => {
+    const tool = registry.get('easyeda_schematic_net_detail');
+    bridgeCall.mockResolvedValue({ netName: 'USB_DP', nodes: [] });
+
+    const result = await tool?.handler(context, { projectId: 'proj-123', netName: 'USB_DP', scope: 'focused' });
+
+    expect(result).toMatchObject({ node_count: 0, not_available: true, error_code: 'NET_EMPTY' });
   });
 
   it('easyeda_schematic_sheet_info preserves the legacy argument-less call', async () => {
@@ -1892,6 +1903,16 @@ describe('Schematic Tools', () => {
       ]);
     });
 
+    it('treats an empty focused net list as not_available with a reason', async () => {
+      const tool = registry.get('easyeda_schematic_nets');
+      bridgeCall.mockResolvedValue([]);
+
+      const result = await tool?.handler(context, { projectId: 'proj-123', scope: 'focused' });
+
+      expect(result).toMatchObject({ nets: [], total: 0, not_available: true, error_code: 'EMPTY_READ' });
+      expect(result?.error).toMatch(/no nets/);
+    });
+
     it('returns not_available on bridge error', async () => {
       const tool = registry.get('easyeda_schematic_nets');
       bridgeCall.mockRejectedValue(new Error('bridge down'));
@@ -1922,7 +1943,7 @@ describe('Schematic Tools', () => {
 
       expect(bridgeCall).toHaveBeenCalledWith('schematic.listComponents', {
         projectId: 'proj-123',
-        limit: 100,
+        limit: 5000,
         offset: 0,
       });
       expect(result).toMatchObject({
@@ -1945,7 +1966,7 @@ describe('Schematic Tools', () => {
       });
       expect(bridgeCall).toHaveBeenCalledWith('schematic.listComponents', {
         projectId: 'proj-123',
-        limit: 100,
+        limit: 5000,
         offset: 0,
         scope: 'focused',
         allPages: false,
@@ -1968,7 +1989,7 @@ describe('Schematic Tools', () => {
       });
       expect(bridgeCall).toHaveBeenCalledWith('schematic.listComponents', {
         projectId: 'proj-123',
-        limit: 100,
+        limit: 5000,
         offset: 0,
         scope: 'all_pages',
         allPages: true,
@@ -2017,6 +2038,48 @@ describe('Schematic Tools', () => {
         total: 0,
         not_available: true,
       });
+    });
+
+    it('filters by reference (exact and glob), projects compact fields, and paginates locally', async () => {
+      const tool = registry.get('easyeda_schematic_components');
+      const items = Array.from({ length: 116 }, (_, i) => ({
+        primitiveId: `e${i}`,
+        reference: i === 5 ? 'USB2' : i === 6 ? 'USB3' : `R${i}`,
+        value: '10k',
+        footprint: 'R0402',
+        datasheet: 'https://example.com/ds.pdf',
+        manufacturer: 'Yageo',
+        x: i,
+        y: 0,
+      }));
+      bridgeCall.mockResolvedValue({ total: items.length, items });
+
+      const all = await tool?.handler(context, { projectId: 'p', limit: 100, offset: 0 });
+      expect(all?.total).toBe(116);
+      expect(all?.components).toHaveLength(100);
+      expect(all?.next_offset).toBe(100);
+      expect(all?.components[0]).not.toHaveProperty('datasheet');
+      expect(all?.components[0]).not.toHaveProperty('manufacturer');
+      expect(all?.components[0]).toMatchObject({ primitiveId: 'e0', reference: 'R0', x: 0 });
+
+      const exact = await tool?.handler(context, { projectId: 'p', reference: 'usb2', limit: 100, offset: 0 });
+      expect(exact?.total).toBe(1);
+      expect(exact?.next_offset).toBeNull();
+      expect(exact?.components).toEqual([expect.objectContaining({ reference: 'USB2' })]);
+      expect(exact?.filters_applied).toMatchObject({ reference: 'usb2' });
+
+      const glob = await tool?.handler(context, { projectId: 'p', reference: 'USB*', limit: 1, offset: 1 });
+      expect(glob?.total).toBe(2);
+      expect(glob?.components).toEqual([expect.objectContaining({ reference: 'USB3' })]);
+      expect(glob?.next_offset).toBeNull();
+
+      const full = await tool?.handler(context, { projectId: 'p', reference: 'USB2', fields: ['all'], limit: 100, offset: 0 });
+      expect(full?.components[0]).toMatchObject({ datasheet: 'https://example.com/ds.pdf', manufacturer: 'Yageo' });
+
+      const kind = await tool?.handler(context, { projectId: 'p', kind: 'net-label', limit: 100, offset: 0 });
+      expect(kind?.total).toBe(0);
+      expect(kind?.components).toEqual([]);
+      expect(kind).not.toHaveProperty('not_available');
     });
   });
 
@@ -2213,6 +2276,28 @@ describe('Schematic Tools', () => {
     ]);
   });
   describe('easyeda_schematic_component_pins', () => {
+    it('accepts a designator and resolves it to a primitiveId', async () => {
+      const tool = registry.get('easyeda_schematic_component_pins');
+      bridgeCall.mockImplementation(async (method: string) => {
+        if (method === 'schematic.listComponents') {
+          return { total: 2, items: [{ primitiveId: 'e1', reference: 'U1' }, { primitiveId: 'e2', reference: 'U2' }] };
+        }
+        return { result: [{ pinNumber: '1', pinName: 'VBUS', x: 0, y: 0, rotation: 0, pinLength: 5 }] };
+      });
+
+      const result = await tool?.handler(context, { reference: 'u2' });
+
+      expect(bridgeCall).toHaveBeenCalledWith('api.call', {
+        path: 'SCH_PrimitiveComponent.getAllPinsByPrimitiveId',
+        args: ['e2'],
+      });
+      expect(result).toMatchObject({ primitiveId: 'e2', reference: 'u2', success: true });
+
+      const missing = await tool?.handler(context, { reference: 'U9' });
+      expect(missing).toMatchObject({ success: false, error_code: 'REF_NOT_FOUND', pins: [] });
+      expect(missing?.hint).toMatch(/easyeda_schematic_components/);
+    });
+
     it('parses pin data from a direct field response', async () => {
       const tool = registry.get('easyeda_schematic_component_pins');
       expect(tool).toBeDefined();

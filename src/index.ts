@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 import {
+  applyDoctorFixes,
   createDoctorReport,
   doctorExitCode,
   formatDoctorReport,
@@ -46,7 +47,8 @@ async function main() {
 
   if (cli.command === 'doctor') {
     const report = await createDoctorReport();
-    process.stdout.write(`${formatDoctorReport(report, { fix: cli.doctorFix })}\n`);
+    const killed = cli.doctorFix ? applyDoctorFixes(report) : undefined;
+    process.stdout.write(`${formatDoctorReport(report, { fix: cli.doctorFix, killed })}\n`);
     process.exitCode = doctorExitCode(report);
     return;
   }

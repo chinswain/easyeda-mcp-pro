@@ -520,8 +520,14 @@ describe('BridgeManager - reconnect', () => {
 
     expect(reconnectingSpy).toHaveBeenCalledTimes(1);
     expect(reconnectingSpy).toHaveBeenCalledWith(expect.objectContaining({ attempt: 1 }));
+    expect(manager.reconnecting).toBe(true);
+    expect(manager.reconnectAttemptCount).toBe(1);
+    expect(manager.nextReconnectAtMs).toBeGreaterThan(Date.now() - 1);
+    expect(manager.lastDisconnectMs).toBeGreaterThan(0);
 
     manager.disconnect('test complete');
+    expect(manager.reconnecting).toBe(false);
+    expect(manager.nextReconnectAtMs).toBeUndefined();
   });
 
   it('should reset reconnect counter on successful handshake', async () => {
@@ -1051,7 +1057,7 @@ describe('BridgeManager - process ownership', () => {
     rmSync(lockDir, { recursive: true, force: true });
   });
 
-  it('blocks a second manager from binding another bridge port and exposes the live owner', async () => {
+  it('keeps a second manager off a second bridge port and attaches it to the live owner instead', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'easyeda-bridge-owner-'));
     testDataDirs.add(dataDir);
     const ownerPort = await getFreePort();
@@ -1066,19 +1072,18 @@ describe('BridgeManager - process ownership', () => {
 
     try {
       await owner.connect();
-      await expect(blocked.connect()).rejects.toThrow(/another easyeda-mcp-pro process/i);
+      await blocked.connect();
 
       expect(owner.activePort).toBe(ownerPort);
-      expect(blocked.activePort).toBe(0);
-      expect(blocked.state).toBe('error');
+      // No second listener: the fallback port stays free and the blocked manager rides the owner's port.
+      expect(blocked.activePort).toBe(ownerPort);
+      expect(blocked.role).toBe('attached');
       expect(blocked.ownershipConflict).toMatchObject({
         blockedByOtherInstance: true,
         ownerPid: process.pid,
         ownerPort,
       });
-      await expect(blocked.call('system.getStatus', {})).rejects.toThrow(
-        new RegExp(`PID ${process.pid}.*port ${ownerPort}`, 'i'),
-      );
+      await expect(blocked.call('system.getStatus', {})).rejects.toThrow(/Bridge not connected/);
     } finally {
       blocked.disconnect('test complete');
       owner.disconnect('test complete');
@@ -1199,4 +1204,54 @@ describe('parsePortScanSpec', () => {
   it('should return empty array for invalid format', () => {
     expect(parsePortScanSpec('abc')).toEqual([]);
   });
+});
+
+describe('BridgeManager - attached relay', () => {
+  it('attaches a second manager to the owner and relays calls to the plugin socket', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'easyeda-bridge-attach-'));
+    testDataDirs.add(dataDir);
+    const port = await getFreePort();
+    const owner = new BridgeManager(createTestConfig({ DATA_DIR: dataDir, BRIDGE_PORT_SCAN: String(port) }));
+    await owner.connect();
+    expect(owner.role).toBe('owner');
+    expect(owner.ownerPid).toBe(process.pid);
+
+    // Same DATA_DIR + live owner pid => lock conflict => attach path.
+    const attached = new BridgeManager(
+      createTestConfig({ DATA_DIR: dataDir, BRIDGE_PORT_SCAN: String(port) }),
+    );
+    await attached.connect();
+    expect(attached.role).toBe('attached');
+    expect(attached.ownerPid).toBe(process.pid);
+    expect(attached.activePort).toBe(port);
+    expect(attached.connected).toBe(false); // owner has no plugin yet
+    await vi.waitFor(() => expect(owner.attachedClients).toBe(1));
+
+    await expect(attached.call('system.getStatus')).rejects.toThrow(/Bridge not connected/);
+
+    // Fake plugin handshakes with the owner; attached client sees pluginConnected.
+    const plugin = await openSocket(port);
+    sendHandshake(plugin, { buildId: 'dabc1xdef2x3456' });
+    await waitForMessage(plugin); // hello
+    await vi.waitFor(() => expect(attached.connected).toBe(true));
+    expect(attached.extensionBuildId).toBe('dabc1xdef2x3456');
+
+    plugin.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type !== 'request') return;
+      plugin.send(
+        JSON.stringify({ id: msg.id, type: 'response', ok: true, result: { echo: msg.method }, durationMs: 1 }),
+      );
+    });
+    await expect(attached.call('system.getStatus')).resolves.toEqual({ echo: 'system.getStatus' });
+
+    // Plugin drops: attached client reports disconnected without losing its owner link.
+    plugin.close();
+    await vi.waitFor(() => expect(attached.connected).toBe(false));
+    expect(attached.role).toBe('attached');
+
+    attached.disconnect('test complete');
+    await vi.waitFor(() => expect(owner.attachedClients).toBe(0));
+    owner.disconnect('test complete');
+  }, 15_000);
 });

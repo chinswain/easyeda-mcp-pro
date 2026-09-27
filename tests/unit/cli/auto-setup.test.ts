@@ -78,7 +78,11 @@ describe('auto-setup CLI module', () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
         mcpServers: {
-          'easyeda-mcp-pro': { command: 'npx', args: ['-y', 'easyeda-mcp-pro@latest'] },
+          'easyeda-mcp-pro': {
+            command: 'npx',
+            args: ['-y', 'easyeda-mcp-pro@latest'],
+            env: { TOOL_PROFILE: 'core', BRIDGE_PORT: '49620' },
+          },
         },
       }),
     );

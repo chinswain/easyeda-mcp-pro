@@ -8,7 +8,10 @@ import {
   buildServerConfigFeatureFlags,
 } from './diagnostics-feature-report.js';
 import { EasyedaApiMethodSchema } from '../bridge/types.js';
-import { PROFILE_DEFINITIONS } from '../config/profiles.js';
+import { findStaleBridgeListeners } from '../bridge/stale-listeners.js';
+import { parsePortScanSpec } from '../bridge/manager.js';
+import { PROFILE_DEFINITIONS, getEnabledProfiles, type ToolProfile } from '../config/profiles.js';
+import { KNOWN_LIMITATIONS } from './known-limitations.js';
 import { SERVER_VERSION } from '../config/version.js';
 import { STARTER_DEVICE_CATALOG } from '../catalog/index.js';
 import {
@@ -41,12 +44,32 @@ const bridgeDiagnosticsSchema = z.object({
   blocked_by_other_instance: z.boolean().optional(),
   owner_pid: z.number().int().positive().optional(),
   owner_port: z.number().int().min(1).max(65535).optional(),
+  role: z.enum(['owner', 'attached', 'none']).optional(),
+  attached_clients: z.number().int().nonnegative().optional(),
+  reconnect_attempts: z.number().int().nonnegative().optional(),
+  last_disconnect_ms: z.number().optional(),
+  extension_build_id: z.string().optional(),
+  expected_extension_build_id: z.string().optional(),
+  extension_build_mismatch: z.boolean().optional(),
 });
+
+function extensionBuildMismatch(ctx: ToolContext): boolean | undefined {
+  const { extensionBuildId, expectedExtensionBuildId } = ctx.bridge;
+  if (!extensionBuildId || !expectedExtensionBuildId) return undefined;
+  return extensionBuildId !== expectedExtensionBuildId;
+}
 
 function getBridgeDiagnostics(ctx: ToolContext): BridgeDiagnosticsSnapshot {
   const lastHeartbeat = ctx.bridge.lastHeartbeatMs;
   const ownershipConflict = ctx.bridge.ownershipConflict;
   return {
+    role: ctx.bridge.role,
+    attached_clients: ctx.bridge.attachedClients,
+    reconnect_attempts: ctx.bridge.reconnectAttempts,
+    last_disconnect_ms: ctx.bridge.lastDisconnectMs || undefined,
+    extension_build_id: ctx.bridge.extensionBuildId,
+    expected_extension_build_id: ctx.bridge.expectedExtensionBuildId,
+    extension_build_mismatch: extensionBuildMismatch(ctx),
     manager_uptime_ms: ctx.bridge.uptimeMs,
     active_port: ctx.bridge.activePort,
     last_heartbeat_ms: lastHeartbeat,
@@ -54,14 +77,40 @@ function getBridgeDiagnostics(ctx: ToolContext): BridgeDiagnosticsSnapshot {
       lastHeartbeat && lastHeartbeat > 0 ? Date.now() - lastHeartbeat : undefined,
     method_registry_hash: ctx.bridge.methodRegistryHash,
     reconnect: ctx.bridge.telemetry,
-    blocked_by_other_instance: ownershipConflict?.blockedByOtherInstance,
-    owner_pid: ownershipConflict?.ownerPid,
-    owner_port: ownershipConflict?.ownerPort,
+    blocked_by_other_instance:
+      ownershipConflict?.blockedByOtherInstance && ctx.bridge.role !== 'attached',
+    owner_pid: ctx.bridge.ownerPid ?? ownershipConflict?.ownerPid,
+    owner_port: ownershipConflict?.ownerPort ?? ctx.bridge.activePort,
+  };
+}
+
+const toolContractSchema = z.object({
+  name: z.string(),
+  group: z.string(),
+  profile: z.string(),
+  access: z.enum(['read', 'write', 'export']),
+  contract: z.string(),
+});
+
+function toolAccess(tool: ToolDefinition): 'read' | 'write' | 'export' {
+  if (tool.sideEffect === 'artifact-write') return 'export';
+  return tool.confirmWrite || tool.sideEffect === 'design-mutation' ? 'write' : 'read';
+}
+
+function toolContract(tool: ToolDefinition): z.infer<typeof toolContractSchema> {
+  // ponytail: first sentence of the description is the one-line contract.
+  const first = tool.description.split(/(?<=\.)\s/)[0] ?? tool.description;
+  return {
+    name: tool.name,
+    group: tool.group,
+    profile: tool.profile,
+    access: toolAccess(tool),
+    contract: first.length > 200 ? `${first.slice(0, 197)}...` : first,
   };
 }
 
 function registerDiagnosticsCore(
-  registry: { register: (def: ToolDefinition) => void },
+  registry: { register: (def: ToolDefinition) => void; getAllTools?: () => ToolDefinition[] },
   config: EnvConfig,
 ) {
   registry.register({
@@ -96,6 +145,22 @@ function registerDiagnosticsCore(
       blocked_by_other_instance: z.boolean().optional(),
       owner_pid: z.number().int().positive().optional(),
       owner_port: z.number().int().min(1).max(65535).optional(),
+      role: z.enum(['owner', 'attached', 'none']).optional(),
+      attached_clients: z.number().int().nonnegative().optional(),
+      extension_build_id: z.string().optional(),
+      expected_extension_build_id: z.string().optional(),
+      extension_build_mismatch: z.boolean().optional(),
+      stale_listeners: z
+        .array(
+          z.object({
+            port: z.number(),
+            pid: z.number(),
+            ppid: z.number().optional(),
+            orphan: z.boolean(),
+          }),
+        )
+        .optional(),
+      warnings: z.array(z.string()),
       status_error: z.string().optional(),
       ups: z.number(),
     }),
@@ -103,12 +168,39 @@ function registerDiagnosticsCore(
       const extensionVersionMismatch = ctx.bridge.extensionVersionMismatch ?? false;
       const registryMismatch = ctx.bridge.registryMismatch ?? false;
       const ownershipConflict = ctx.bridge.ownershipConflict;
+      const buildMismatch = extensionBuildMismatch(ctx);
+      const warnings: string[] = [];
+      if (buildMismatch)
+        warnings.push(
+          `Installed plugin build ${ctx.bridge.extensionBuildId} differs from shipped build ${ctx.bridge.expectedExtensionBuildId}; re-import easyeda-bridge-extension.eext.`,
+        );
+      // ponytail: stale scan is one process listing, cheap enough on every health check.
+      const staleListeners = await findStaleBridgeListeners({
+        host: config.BRIDGE_HOST,
+        ports: parsePortScanSpec(config.BRIDGE_PORT_SCAN),
+      }).catch(() => []);
+      const orphanPorts = staleListeners.filter((l) => l.orphan).map((l) => l.port);
+      if (orphanPorts.length)
+        warnings.push(
+          `Orphaned bridge listener(s) on port(s) ${orphanPorts.join(', ')}; run "npx easyeda-mcp-pro --doctor --fix" to stop them.`,
+        );
+      if (ctx.bridge.role === 'attached' && !ctx.bridge.connected)
+        warnings.push(
+          `Attached to owner pid ${ctx.bridge.ownerPid}, but the owner has no plugin session.`,
+        );
       return {
         status: !ctx.bridge.connected
           ? ('degraded' as const)
-          : extensionVersionMismatch || registryMismatch
+          : extensionVersionMismatch || registryMismatch || buildMismatch
             ? ('degraded' as const)
             : ('ok' as const),
+        role: ctx.bridge.role,
+        attached_clients: ctx.bridge.attachedClients,
+        extension_build_id: ctx.bridge.extensionBuildId,
+        expected_extension_build_id: ctx.bridge.expectedExtensionBuildId,
+        extension_build_mismatch: buildMismatch,
+        stale_listeners: staleListeners,
+        warnings,
         version: SERVER_VERSION,
         node_version: process.version,
         profile: ctx.profile,
@@ -156,19 +248,46 @@ function registerDiagnosticsCore(
       blocked_by_other_instance: z.boolean().optional(),
       owner_pid: z.number().int().positive().optional(),
       owner_port: z.number().int().min(1).max(65535).optional(),
+      role: z.enum(['owner', 'attached', 'none']).optional(),
+      attached_clients: z.number().int().nonnegative().optional(),
+      reconnect_attempts: z.number().int().nonnegative().optional(),
+      reconnecting: z.boolean().optional(),
+      next_reconnect_at_ms: z.number().optional(),
+      last_seen_ms: z.number().optional(),
+      last_disconnect_ms: z.number().optional(),
+      active_document: z.unknown().optional(),
       diagnostics: bridgeDiagnosticsSchema.optional(),
     }),
     handler: async (ctx: ToolContext) => {
+      const shared = {
+        role: ctx.bridge.role,
+        owner_pid: ctx.bridge.ownerPid,
+        attached_clients: ctx.bridge.attachedClients,
+        reconnect_attempts: ctx.bridge.reconnectAttempts,
+        reconnecting: ctx.bridge.reconnecting,
+        next_reconnect_at_ms: ctx.bridge.nextReconnectAtMs,
+        last_seen_ms: ctx.bridge.lastHeartbeatMs || undefined,
+        last_disconnect_ms: ctx.bridge.lastDisconnectMs || undefined,
+        uptime_ms: process.uptime() * 1000,
+        diagnostics: getBridgeDiagnostics(ctx),
+      };
       if (!ctx.bridge.connected) {
         const ownershipConflict = ctx.bridge.ownershipConflict;
+        const attachedIdle = ctx.bridge.role === 'attached';
         return {
+          ...shared,
           connected: false,
-          uptime_ms: process.uptime() * 1000,
-          status_error: ownershipConflict?.message,
-          blocked_by_other_instance: ownershipConflict?.blockedByOtherInstance,
-          owner_pid: ownershipConflict?.ownerPid,
+          status_error: attachedIdle
+            ? `Attached to owner pid ${ctx.bridge.ownerPid}; the owner has no EasyEDA plugin session yet.`
+            : (ownershipConflict?.message ??
+              (ctx.bridge.reconnecting
+                ? `EasyEDA plugin disconnected; reconnect attempt ${ctx.bridge.reconnectAttempts} is scheduled. Retry after it reconnects or reopen the EasyEDA plugin.`
+                : undefined)),
+          blocked_by_other_instance: attachedIdle
+            ? false
+            : ownershipConflict?.blockedByOtherInstance,
+          owner_pid: ctx.bridge.ownerPid ?? ownershipConflict?.ownerPid,
           owner_port: ownershipConflict?.ownerPort,
-          diagnostics: getBridgeDiagnostics(ctx),
         };
       }
       try {
@@ -179,23 +298,24 @@ function registerDiagnosticsCore(
           capabilities?: string[];
           devMode?: boolean;
           lastHeartbeatMs?: number;
+          activeDocument?: unknown;
+          activeTab?: unknown;
         };
         return {
+          ...shared,
           connected: true,
           bridge_version: data.bridgeVersion,
           easyeda_version: data.easyedaVersion,
           capabilities: data.capabilities,
           dev_mode: data.devMode,
           last_heartbeat_ms: data.lastHeartbeatMs,
-          uptime_ms: process.uptime() * 1000,
-          diagnostics: getBridgeDiagnostics(ctx),
+          active_document: data.activeDocument ?? data.activeTab,
         };
       } catch (err) {
         return {
+          ...shared,
           connected: true,
-          uptime_ms: process.uptime() * 1000,
           status_error: err instanceof Error ? err.message : String(err),
-          diagnostics: getBridgeDiagnostics(ctx),
         };
       }
     },
@@ -233,6 +353,29 @@ function registerDiagnosticsCore(
       feature_flags: z.record(z.string(), z.boolean()),
       feature_maturity: featureMaturitySchema,
       transports: z.array(z.string()),
+      /** Every tool enabled in the current profile with its one-line contract and access class. */
+      tools: z.array(toolContractSchema),
+      tools_in_profile: z.number().int().nonnegative(),
+      /** Tool names each higher profile would add on top of the current one. */
+      unlocked_by_profile: z.record(z.string(), z.array(z.string())),
+      known_limitations: z.array(
+        z.object({ area: z.string(), limitation: z.string(), workaround: z.string() }),
+      ),
+      units: z.object({
+        length: z.string(),
+        angle: z.string(),
+        layers: z.string(),
+      }),
+      /** How every agentic write/read tool behaves; readable without the bridge source. */
+      contract: z.object({
+        guard: z.string(),
+        idempotency: z.string(),
+        verification: z.string(),
+        pagination: z.string(),
+        errors: z.string(),
+        transactions: z.string(),
+        reads: z.string(),
+      }),
     }),
     handler: async (_ctx: ToolContext, _params: unknown) => {
       const profiles = Object.values(PROFILE_DEFINITIONS).map((p) => ({
@@ -241,6 +384,15 @@ function registerDiagnosticsCore(
         description: p.description,
         is_default: p.isDefault,
       }));
+      const all = registry.getAllTools?.() ?? [];
+      const enabled = new Set(getEnabledProfiles(config.TOOL_PROFILE));
+      const tools = all.filter((t) => enabled.has(t.profile)).map(toolContract);
+      const unlocked: Record<string, string[]> = {};
+      for (const profile of Object.keys(PROFILE_DEFINITIONS) as ToolProfile[]) {
+        if (enabled.has(profile)) continue;
+        const names = all.filter((t) => t.profile === profile).map((t) => t.name);
+        if (names.length) unlocked[profile] = names.sort();
+      }
 
       return {
         server_name: 'easyeda-mcp-pro',
@@ -251,6 +403,29 @@ function registerDiagnosticsCore(
         feature_flags: buildCapabilityFeatureFlags(config),
         feature_maturity: getFeatureMaturity(config),
         transports: [config.TRANSPORT],
+        tools,
+        tools_in_profile: tools.length,
+        unlocked_by_profile: unlocked,
+        known_limitations: KNOWN_LIMITATIONS,
+        units: {
+          length: 'mm from the board origin unless a field ends in _mil',
+          angle: 'degrees, counter-clockwise',
+          layers: 'layer names as strings (e.g. "Top", "Inner1", "Bottom")',
+        },
+        contract: {
+          guard:
+            'Every pcb_* write takes projectId (+ optional boardName) and fails with error_code WRONG_DOCUMENT (error_data.actual = focused doc) unless that PCB is focused. Legacy pcb writes guard only when projectId is passed.',
+          idempotency:
+            'Writes accept op_id; a repeat with the same op_id returns the stored result with replayed: true and performs no write.',
+          verification:
+            'Writes read back the primitive and return verified: true|false with expected/actual on mismatch.',
+          pagination: 'List tools take limit (<=500, default 100) and offset and return total + next_offset.',
+          errors: 'Failures are {success:false, error, error_code, hint, error_data?}; never a bare string.',
+          transactions:
+            'easyeda_project_begin_transaction / commit / rollback wrap multi-step writes; the bridge owner serialises writes from attached clients.',
+          reads:
+            'Failed reads return success:false with error_code, or not_available:true with a reason; never an empty list.',
+        },
       };
     },
   });

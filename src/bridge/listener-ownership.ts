@@ -52,7 +52,7 @@ function errnoCode(error: unknown): string | undefined {
     : undefined;
 }
 
-function isProcessAlive(pid: number): boolean {
+export function isProcessAlive(pid: number): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
 
   try {

@@ -920,6 +920,7 @@ function sendHandshake(): void {
     easyedaVersion: getEasyedaVersion(),
     devMode: false,
     loaderVersion: EXTENSION_INFO.extensionVersion,
+    buildId: activeDispatcher.buildId,
   };
   // Lets the server fail loudly when this extension serves stale dispatch
   // logic. Computed asynchronously at startup/swap; omitted if not ready yet.

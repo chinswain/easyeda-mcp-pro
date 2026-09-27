@@ -1577,7 +1577,7 @@ describe('createDispatcher', () => {
     const padGetAll = vi
       .fn()
       .mockResolvedValueOnce([
-        { getState_HoleType: () => 'MountingHole', getState_HoleSize: () => 1 },
+        { getState_Hole: () => ['ROUND', 126], getState_Net: () => '' },
       ])
       .mockResolvedValueOnce([1, 2]);
     const dispatcher = createDispatcher(

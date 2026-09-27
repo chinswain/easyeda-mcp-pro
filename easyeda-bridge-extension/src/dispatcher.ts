@@ -32,6 +32,7 @@ import {
   createPcbMutationOperations,
   type PcbMutationOperations,
 } from './pcb-mutation-operations.js';
+import { createPcbAgenticOperations, type PcbAgenticOperations } from './pcb-agentic-operations.js';
 import { createPcbReadOperations, type PcbReadOperations } from './pcb-read-operations.js';
 import { createPcbWriteOperations, type PcbWriteOperations } from './pcb-write-operations.js';
 import { createProjectOperations, type ProjectOperations } from './project-operations.js';
@@ -79,25 +80,49 @@ const METHOD_LIST: readonly string[] = [
   'design.drc',
   'design.erc',
   'design.ruleCheck',
+  'export.bom',
   'export.netlist',
   'export.pdf',
   'export.pickPlace',
+  'export.step',
   'inventory.getPrice',
   'inventory.search',
   'library.getDeviceByLcscId',
+  'pcb.addArc',
+  'pcb.addCopperPour',
+  'pcb.addHole',
+  'pcb.addKeepout',
   'pcb.addSilkscreenLine',
   'pcb.addText',
   'pcb.addTrack',
   'pcb.addVia',
+  'pcb.addVias',
   'pcb.addZone',
+  'pcb.componentBounds',
+  'pcb.connectivityCheck',
+  'pcb.copperIslands',
   'pcb.deleteComponent',
+  'pcb.deleteTracks',
   'pcb.exportRouteContext',
+  'pcb.getDesignRules',
   'pcb.listComponents',
   'pcb.listFills',
   'pcb.listRegions',
   'pcb.listTracks',
   'pcb.listVias',
   'pcb.modifyComponent',
+  'pcb.modifyVia',
+  'pcb.moveComponent',
+  'pcb.moveGroup',
+  'pcb.netStatus',
+  'pcb.ripupNet',
+  'pcb.routeNet',
+  'pcb.setComponentAttribute',
+  'pcb.setDesignRules',
+  'pcb.setDiffPair',
+  'pcb.setNetClass',
+  'pcb.setNetRules',
+  'pcb.setStackup',
   'project.export',
   'project.open',
   'project.save',
@@ -106,11 +131,13 @@ const METHOD_LIST: readonly string[] = [
   'schematic.addRectangle',
   'schematic.addText',
   'schematic.addWire',
+  'schematic.componentReplace',
   'schematic.connectPinToNet',
   'schematic.connectPinsByNet',
   'schematic.createNetFlag',
   'schematic.createNetPort',
   'schematic.deletePrimitive',
+  'schematic.deleteWire',
   'schematic.getNetDetail',
   'schematic.getPinNoConnect',
   'schematic.getPrimitiveSnapshot',
@@ -123,12 +150,15 @@ const METHOD_LIST: readonly string[] = [
   'schematic.placeComponent',
   'schematic.primitiveBounds',
   'schematic.recreatePrimitiveSnapshot',
+  'schematic.renameNet',
   'schematic.restorePrimitiveSnapshot',
   'schematic.searchDevice',
+  'schematic.setNetLabel',
   'schematic.setPinNoConnect',
   'schematic.setTitleBlock',
   'schematic.syncToPcb',
   'schematic.validateNetlist',
+  'schematic.wiresAtPin',
   'system.apiInventory',
   'system.getStatus',
   'system.inspectComponents',
@@ -149,6 +179,7 @@ let exportOperations: ExportOperations;
 let pcbMutationOperations: PcbMutationOperations;
 let pcbReadOperations: PcbReadOperations;
 let pcbWriteOperations: PcbWriteOperations;
+let pcbAgenticOperations: PcbAgenticOperations;
 let projectOperations: ProjectOperations;
 let readOnlyOperations: ReadOnlyOperations;
 let schematicComponentInspection: SchematicComponentInspectionOperations;
@@ -1919,6 +1950,14 @@ export function createDispatcher(toolkit: DispatcherToolkit): Dispatcher {
     extractPrimitiveId,
     createBridgeError: newBridgeError,
   });
+  pcbAgenticOperations = createPcbAgenticOperations({
+    callFirst,
+    readFirstPath,
+    extractPrimitiveId,
+    createBridgeError: newBridgeError,
+    deletePrimitives: (ids) => pcbReadOperations.deletePrimitives(ids),
+    normalizeBinaryResult,
+  });
   projectOperations = createProjectOperations({ callFirst });
   schematicComponentInspection = createSchematicComponentInspectionOperations({
     readFirstPath,
@@ -1985,6 +2024,7 @@ export function createDispatcher(toolkit: DispatcherToolkit): Dispatcher {
     pcbWriteOperations,
     pcbMutationOperations,
     pcbReadOperations,
+    pcbAgenticOperations,
     systemApiOperations,
   });
   textAlignModeCache.clear();

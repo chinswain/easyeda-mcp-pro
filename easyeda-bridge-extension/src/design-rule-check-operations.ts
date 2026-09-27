@@ -67,6 +67,15 @@ function firstScalarValue(values: unknown[]): string {
   return 'unknown';
 }
 
+function stringList(...values: unknown[]): string[] {
+  const out: string[] = [];
+  for (const v of values) {
+    if (Array.isArray(v)) out.push(...v.filter((x) => typeof x === 'string' || typeof x === 'number').map(String));
+    else if (typeof v === 'string' || typeof v === 'number') out.push(String(v));
+  }
+  return [...new Set(out)];
+}
+
 function normalizeViolation(item: unknown): Record<string, unknown> {
   const obj: Record<string, unknown> = item && typeof item === 'object' ? { ...item } : {};
   const explanation =
@@ -91,6 +100,11 @@ function normalizeViolation(item: unknown): Record<string, unknown> {
   } else if (obj.location && typeof obj.location === 'object') {
     position = obj.location as Record<string, unknown>;
   }
+  // ponytail: native leaves use several key spellings; union them rather than model each rule type.
+  const primitiveIds = stringList(obj.primitiveIds, obj.primitiveId, obj.objectIds, obj.objectId, obj.ids, obj.id);
+  const nets = stringList(obj.nets, obj.netNames, obj.net, obj.netName);
+  const pins = stringList(obj.pins, obj.pinNames, obj.pin, obj.pinName, obj.pinNumber);
+  const layer = obj.layer ?? position.layer;
   return {
     rule: firstScalarValue([
       obj.rule,
@@ -100,13 +114,18 @@ function normalizeViolation(item: unknown): Record<string, unknown> {
       obj.name,
       obj.type,
     ]),
+    ruleId: firstScalarValue([obj.ruleId, obj.ruleType, obj.errorType, obj.ruleName, obj.rule]),
     description: typeof message === 'string' ? message : JSON.stringify(message),
     severity: normalizeSeverity(severitySource),
-    net: obj.net ?? obj.netName ?? undefined,
-    component: obj.component ?? obj.ref ?? obj.designator ?? obj.primitiveId ?? undefined,
+    net: nets[0],
+    nets,
+    pins,
+    primitiveIds,
+    component: obj.component ?? obj.ref ?? obj.designator ?? primitiveIds[0] ?? undefined,
+    page: firstScalarValue([obj.page, obj.pageUuid, obj.sheet, obj.sheetUuid]),
     location:
       typeof position.x === 'number' && typeof position.y === 'number'
-        ? { x: position.x, y: position.y, layer: obj.layer as string | undefined }
+        ? { x: position.x, y: position.y, layer: typeof layer === 'string' ? layer : undefined }
         : undefined,
   };
 }

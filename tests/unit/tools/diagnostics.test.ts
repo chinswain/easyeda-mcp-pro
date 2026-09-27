@@ -154,6 +154,34 @@ describe('Diagnostics Tools', () => {
     expect(bridgeCall).not.toHaveBeenCalled();
   });
 
+  it('easyeda_bridge_status reports a pending auto-reconnect after the plugin drops', async () => {
+    const tool = registry.get('easyeda_bridge_status');
+    const result = await tool?.handler(
+      {
+        ...context,
+        bridge: {
+          connected: false,
+          call: bridgeCall,
+          role: 'owner',
+          reconnectAttempts: 3,
+          reconnecting: true,
+          nextReconnectAtMs: 1_700_000_000_000,
+          lastDisconnectMs: 1_699_999_990_000,
+        },
+      },
+      {},
+    );
+
+    expect(result).toMatchObject({
+      connected: false,
+      reconnecting: true,
+      reconnect_attempts: 3,
+      next_reconnect_at_ms: 1_700_000_000_000,
+      last_disconnect_ms: 1_699_999_990_000,
+    });
+    expect(result?.status_error).toMatch(/reconnect attempt 3/);
+  });
+
   it('surfaces another process owning the local bridge listener', async () => {
     const health = registry.get('easyeda_health_check');
     const status = registry.get('easyeda_bridge_status');
@@ -231,6 +259,23 @@ describe('Diagnostics Tools', () => {
     expect(result?.current_profile).toBe('core');
     expect(result?.feature_flags).toBeDefined();
     expect(result?.transports).toEqual(['stdio']);
+  });
+
+  it('easyeda_get_capabilities lists tool contracts, profile unlocks and known limitations', async () => {
+    const tool = registry.get('easyeda_get_capabilities');
+    const result = await tool?.handler(context, {});
+
+    const names = result?.tools.map((t: { name: string }) => t.name);
+    expect(names).toContain('easyeda_get_capabilities');
+    expect(result?.tools_in_profile).toBe(result?.tools.length);
+    for (const t of result?.tools ?? []) {
+      expect(['read', 'write', 'export']).toContain(t.access);
+      expect(t.profile).toBe('core');
+      expect(t.contract.length).toBeGreaterThan(0);
+    }
+    expect(result?.unlocked_by_profile).not.toHaveProperty('core');
+    expect(result?.known_limitations.length).toBeGreaterThan(0);
+    expect(result?.units.length).toMatch(/mm/);
   });
 
   it('easyeda_get_server_config returns redacted config', async () => {

@@ -261,9 +261,10 @@ describe('board inspection operations', () => {
         },
         pcb_PrimitivePad: {
           getAll: async () => [
-            { getState_HoleType: () => 'MountingHole', getState_HoleSize: () => 1 },
-            { getState_HoleType: () => '', getState_HoleSize: () => 2.5 },
-            { getState_HoleType: () => '', getState_HoleSize: () => 1 },
+            { getState_Hole: () => ['ROUND', 126], getState_Net: () => '' },
+            { getState_Hole: () => ['ROUND', 60], getState_Net: () => undefined },
+            { getState_Hole: () => ['ROUND', 40], getState_Net: () => 'GND' },
+            { getState_Hole: () => null, getState_Net: () => '' },
           ],
         },
       },

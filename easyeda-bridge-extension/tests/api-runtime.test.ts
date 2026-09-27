@@ -118,6 +118,7 @@ describe('EasyEDA API runtime', () => {
     await expect(runtime.callAllowedApi('sch_Service.read', [5])).resolves.toEqual({
       path: 'sch_Service.read',
       resolvedPath: 'eda.SCH_Service.read',
+      serialization: { maxDepth: 20, incomplete: false },
       result: expect.objectContaining({
         total: 12,
         state: { Name: 'service' },

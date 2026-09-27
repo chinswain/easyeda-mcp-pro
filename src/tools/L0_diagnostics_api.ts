@@ -14,17 +14,54 @@ import {
   writeVerificationSchema,
 } from './write-verify.js';
 
+const API_PATH = /^[A-Za-z]+_[A-Za-z0-9]+\.[A-Za-z][A-Za-z0-9_]*$/;
+
 const apiCallInputSchema = z.object({
-  path: z.string().regex(/^[A-Za-z]+_[A-Za-z0-9]+\.[A-Za-z][A-Za-z0-9_]*$/),
+  path: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Class.method, e.g. PCB_PrimitiveRegion.get. An "eda." prefix and lowercase class prefix are accepted.'),
+  className: z.string().optional().describe('Alternative to path: class name, e.g. PCB_PrimitiveLine.'),
+  method: z.string().optional().describe('Alternative to path: method name, e.g. getAll.'),
   args: z.array(z.unknown()).default([]),
   confirmWrite: z.boolean().default(false),
 });
 
-const writeMethodPattern =
-  /\.(create|delete|modify|open|openProject|save|import|export|reorder|remove|update|set|reset|done)$/i;
+/** "eda.pcb_PrimitiveRegion.get" / {className, method} → "PCB_PrimitiveRegion.get". */
+export function resolveApiPath(input: { path?: string; className?: string; method?: string }): string {
+  const raw = (input.path ?? [input.className, input.method].filter(Boolean).join('.')).trim().replace(/^eda\./, '');
+  const path = raw.replace(/^([a-z]+)_/, (_, p: string) => `${p.toUpperCase()}_`);
+  if (!API_PATH.test(path)) {
+    throw new Error(`Invalid API path "${raw}". Expected Class.method, e.g. SCH_PrimitiveWire.getAll.`);
+  }
+  return path;
+}
+
+// Methods that only read. Anything else can mutate and needs confirmWrite=true.
+const readMethodPattern = /\.(get|is|has|list|search|find|query|count)[A-Za-z0-9_]*$/;
 
 function requiresWriteConfirmation(path: string): boolean {
-  return writeMethodPattern.test(path);
+  return !readMethodPattern.test(path);
+}
+
+/** Resolved path, or the refusal to return (bad path / unconfirmed write). */
+function gateApiCall(input: z.infer<typeof apiCallInputSchema>) {
+  let path: string;
+  try {
+    path = resolveApiPath(input);
+  } catch (err) {
+    return { ok: false, path: input.path ?? '', error_code: 'INVALID_API_PATH', error: (err as Error).message };
+  }
+  if (requiresWriteConfirmation(path) && !input.confirmWrite) {
+    return {
+      ok: false,
+      path,
+      requires_confirmation: true,
+      error: `Potentially mutating EasyEDA API method "${path}" requires confirmWrite=true.`,
+    };
+  }
+  return path;
 }
 
 /**
@@ -333,13 +370,14 @@ function registerDiagnosticsApi(
     name: 'easyeda_api_call',
     title: 'Call EasyEDA API',
     description:
-      'Controlled call to a documented EasyEDA class method by path, for example SCH_PrimitiveWire.getAll. ' +
-      'This is not raw JavaScript execution. A modify call is read back and fails with WRITE_NOT_PERSISTED ' +
-      'when the runtime ignored the requested keys; property bags are camelCase (supplierId, not SupplierId).',
+      'Call a documented EasyEDA class method by path, e.g. SCH_PrimitiveWire.getAll. Read methods need no confirmWrite. ' +
+      'modify calls are read back and fail with WRITE_NOT_PERSISTED if ignored; property bags are camelCase. ' +
+      'Check serialization.incomplete before using geometry.',
     profile: 'full',
     evidence: ['runtime-probe', 'pro-api-types', 'official-docs'],
     risk: 'high',
     confirmWrite: true,
+    confirmationPolicy: 'handler',
     group: 'diagnostics',
     version: '1.0.0',
     annotations: {
@@ -352,6 +390,7 @@ function registerDiagnosticsApi(
       ok: z.boolean(),
       path: z.string(),
       resolvedPath: z.string().optional(),
+      serialization: z.object({ maxDepth: z.number(), incomplete: z.boolean() }).optional(),
       result: z.unknown().optional(),
       error: z.string().optional(),
       error_code: z.string().optional(),
@@ -359,15 +398,11 @@ function registerDiagnosticsApi(
       requires_confirmation: z.boolean().optional(),
     }),
     handler: async (ctx: ToolContext, params: unknown) => {
-      const { path, args, confirmWrite } = apiCallInputSchema.parse(params);
-      if (requiresWriteConfirmation(path) && !confirmWrite) {
-        return {
-          ok: false,
-          path,
-          requires_confirmation: true,
-          error: `Potentially mutating EasyEDA API method "${path}" requires confirmWrite=true.`,
-        };
-      }
+      const input = apiCallInputSchema.parse(params);
+      const { args } = input;
+      const gate = gateApiCall(input);
+      if (typeof gate !== 'string') return gate;
+      const path = gate;
 
       const target = modifyVerificationTarget(path, args);
       let before: Record<string, unknown> | undefined;
@@ -382,12 +417,18 @@ function registerDiagnosticsApi(
 
       try {
         const result = await ctx.bridge.call('api.call', { path, args });
-        const data = result as { path?: string; resolvedPath?: string; result?: unknown };
+        const data = result as {
+          path?: string;
+          resolvedPath?: string;
+          result?: unknown;
+          serialization?: { maxDepth: number; incomplete: boolean };
+        };
         const response = {
           ok: true,
           path: data.path ?? path,
           resolvedPath: data.resolvedPath,
           result: data.result,
+          serialization: data.serialization,
         };
         if (!target) return response;
 

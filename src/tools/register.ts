@@ -16,6 +16,7 @@ import { registerSchematicReadTools } from './L1_schematic_read.js';
 import { registerSchematicWriteTools } from './L1_schematic_write.js';
 import { registerTransactionTools } from './L1_transactions.js';
 import { registerVisualTools } from './L1_visual.js';
+import { registerPcbAgenticTools } from './L1_pcb_agentic.js';
 import { registerAutoroutingTools } from './L2_autorouting.js';
 import { registerSimulationTools } from './L2_simulation.js';
 import { registerSchematicLayoutTools } from './L2_schematic_layout.js';
@@ -44,4 +45,5 @@ export function registerBuiltinTools(registry: ToolRegistry, config: EnvConfig):
   registerSchematicLayoutTools(registry, config);
   registerAutoroutingTools(registry, config);
   registerSimulationTools(registry, config);
+  registerPcbAgenticTools(registry, config);
 }

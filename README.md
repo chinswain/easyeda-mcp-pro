@@ -592,11 +592,11 @@ The server registers profile-gated tools according to the active `TOOL_PROFILE`.
 
 | Profile        | Registered tools |
 | -------------- | ---------------: |
-| `core`         |               73 |
-| `pro`          |              100 |
-| `full`         |              112 |
-| `dev`          |              117 |
-| `experimental` |              117 |
+| `core`         |               74 |
+| `pro`          |              101 |
+| `full`         |              148 |
+| `dev`          |              153 |
+| `experimental` |              153 |
 
 <!-- capability-counts:end -->
 
@@ -628,6 +628,10 @@ Raw JavaScript execution is intentionally not part of the default dev tool set. 
 | `easyeda_component_probe`      | dev     | Inspect live schematic component runtime objects and state getters |
 
 `easyeda_api_call` is intentionally not raw JavaScript execution. It only accepts documented EasyEDA Pro API class prefixes (`DMT_`, `SCH_`, `PCB_`, `LIB_`) and a direct method name such as `SCH_PrimitiveWire.getAll`. Methods that can mutate project state, such as `create`, `delete`, `modify`, `openProject`, `save`, `import`, or `export`, require `confirmWrite=true`.
+
+API results retain up to 20 nested object/array levels, including copper polygon vertices and native DRC leaves. The `serialization.incomplete` flag reports depth truncation, circular references, or failed state getters. An `ok: true` response indicates that the API call succeeded; it does not guarantee complete geometry. Do not use incomplete results for clearance or connectivity decisions. Existing transport payload limits still apply; read individual primitives when a bulk response is too large. Older extensions omit this metadata.
+
+Two bridge adapters expose the documented pour instance methods through the same tool: `PCB_PrimitivePour.getCopperRegion` and `PCB_PrimitivePour.rebuildCopperRegion`. Both take `args: [{ "primitiveId": "pour-id", "pcbUuid": "target-pcb-uuid" }]`. The bridge checks the active PCB before and after fetching the pour, then invokes the instance method with its native receiver. Rebuild requires `confirmWrite: true`; it can change filled copper and must be followed by geometry readback and DRC. These are explicit adapters, not general instance method chaining. EasyEDA documents these methods as beta APIs, so verify support on a disposable board before relying on them.
 
 To enable the controlled full-control API tool in your MCP client, set:
 

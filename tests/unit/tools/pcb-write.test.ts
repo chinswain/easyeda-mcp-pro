@@ -303,6 +303,38 @@ describe('PCB Write Tools', () => {
     });
   });
 
+  it('easyeda_pcb_modify_via forwards params and mirrors verified into success', async () => {
+    const tool = registry.get('easyeda_pcb_modify_via');
+    bridgeCall.mockResolvedValue({ primitiveId: 'v2', previousPrimitiveId: 'v1', recreated: true, verified: true });
+    const result = await tool?.handler(context, { primitiveId: 'v1', x: 300, y: 320, confirmWrite: true });
+    expect(bridgeCall).toHaveBeenCalledWith('pcb.modifyVia', { primitiveId: 'v1', x: 300, y: 320 });
+    expect(result).toMatchObject({ success: true, primitiveId: 'v2', previousPrimitiveId: 'v1', recreated: true, verified: true });
+
+    bridgeCall.mockRejectedValue(Object.assign(new Error('Via v9 not found'), { code: 'NOT_FOUND', suggestion: 'List vias' }));
+    expect(await tool?.handler(context, { primitiveId: 'v9', x: 1, confirmWrite: true })).toEqual({
+      success: false,
+      error: 'Via v9 not found',
+      error_code: 'NOT_FOUND',
+      hint: 'List vias',
+    });
+  });
+
+  it('easyeda_pcb_add_arc and easyeda_pcb_add_hole forward to the bridge', async () => {
+    bridgeCall.mockResolvedValue({ primitiveId: 'l1', primitiveIds: ['l1', 'l2'], segments: 2, approximated: true });
+    const arc = await registry.get('easyeda_pcb_add_arc')?.handler(context, {
+      cx: 0, cy: 0, radius: 100, startAngle: 0, endAngle: 20, confirmWrite: true,
+    });
+    expect(bridgeCall).toHaveBeenCalledWith('pcb.addArc', { cx: 0, cy: 0, radius: 100, startAngle: 0, endAngle: 20 });
+    expect(arc).toMatchObject({ success: true, segments: 2, approximated: true });
+
+    bridgeCall.mockResolvedValue({ primitiveId: 'pad1' });
+    const hole = await registry.get('easyeda_pcb_add_hole')?.handler(context, {
+      x: 400, y: 400, holeDiameter: 126, padDiameter: 252, plated: false, confirmWrite: true,
+    });
+    expect(bridgeCall).toHaveBeenLastCalledWith('pcb.addHole', { x: 400, y: 400, holeDiameter: 126, padDiameter: 252, plated: false });
+    expect(hole).toEqual({ success: true, primitiveId: 'pad1' });
+  });
+
   it('easyeda_pcb_add_zone should fail closed without calling the bridge', async () => {
     const tool = registry.get('easyeda_pcb_add_zone');
 
@@ -455,6 +487,44 @@ describe('PCB Write Tools', () => {
 
       expect(result).toEqual({ success: false, error: 'no pcb tab' });
     });
+  });
+
+  it('easyeda_pcb_delete_component resolves designators before deleting', async () => {
+    const tool = registry.get('easyeda_pcb_delete_component');
+    bridgeCall.mockImplementation(async (method: string) => {
+      if (method === 'pcb.listComponents') {
+        return { total: 2, items: [{ primitiveId: 'p1', designator: 'R36' }, { primitiveId: 'p2', designator: 'LED1' }] };
+      }
+      return { success: true, deletedCount: 2, deleted: ['p1', 'p2'], notFound: [] };
+    });
+
+    const result = await tool?.handler(context, { references: ['r36', 'LED1'], confirmWrite: true });
+
+    expect(bridgeCall).toHaveBeenCalledWith('pcb.deleteComponent', { primitiveIds: ['p1', 'p2'] });
+    expect(result).toMatchObject({ success: true, resolved: { r36: 'p1', LED1: 'p2' } });
+
+    const missing = await tool?.handler(context, { references: ['R99'], confirmWrite: true });
+    expect(missing).toMatchObject({ success: false, error_code: 'REF_NOT_FOUND' });
+    expect(bridgeCall).not.toHaveBeenCalledWith('pcb.deleteComponent', { primitiveIds: [] });
+  });
+
+  it('easyeda_pcb_modify_component previews by designator', async () => {
+    const tool = registry.get('easyeda_pcb_modify_component');
+    bridgeCall.mockImplementation(async (method: string) => {
+      if (method === 'pcb.listComponents') {
+        return {
+          total: 1,
+          items: [{ primitiveId: 'p1', designator: 'U2', x: 10, y: 20, rotation: 0, layer: 1, locked: false }],
+        };
+      }
+      throw new Error(`unexpected ${method}`);
+    });
+
+    const result = await tool?.handler(context, { reference: 'U2', xMil: 30 });
+    expect(result).toMatchObject({ success: true, primitive_id: 'p1', mode: 'preview', applied: false });
+
+    const ambiguous = await tool?.handler(context, { reference: 'U2', primitiveId: 'p1', xMil: 30 }).catch((e) => e);
+    expect(String(ambiguous)).toMatch(/exactly one of primitiveId or reference/);
   });
 
   it('easyeda_pcb_delete_component should call bridge delete', async () => {

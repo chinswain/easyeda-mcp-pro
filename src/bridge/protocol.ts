@@ -27,6 +27,8 @@ export const BridgeHandshakeSchema = z.object({
   methodListHash: z.string().optional(),
   /** Version of the extension loader shell (tracks the .eext import). */
   loaderVersion: z.string().optional(),
+  /** Dispatcher build id baked into the installed .eext (compared with the shipped checksums manifest). */
+  buildId: z.string().optional(),
 });
 
 /**

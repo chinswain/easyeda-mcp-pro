@@ -87,6 +87,35 @@ describe('DRC/ERC Tools', () => {
     expect(bridgeCall).not.toHaveBeenCalled();
   });
 
+  it('easyeda_drc_run and easyeda_erc_run expose per-violation ids, pins, nets and page', async () => {
+    const bridgeViolation = {
+      rule: 'Clearance',
+      ruleId: 'clearance',
+      description: 'Track too close to pad',
+      severity: 'error',
+      primitiveIds: ['e12', 'e34'],
+      nets: ['GND'],
+      pins: ['U2.5'],
+      page: 'page-1',
+      location: { x: 1, y: 2, layer: 'BottomLayer' },
+    };
+    bridgeCall.mockResolvedValue({ violations: [bridgeViolation], errorCount: 1, warningCount: 0 });
+    const expected = {
+      rule_id: 'clearance',
+      primitive_ids: ['e12', 'e34'],
+      pin_names: ['U2.5'],
+      net_names: ['GND'],
+      page: 'page-1',
+      location: expect.objectContaining({ x: 1, y: 2 }),
+    };
+
+    const drc = await registry.get('easyeda_drc_run')?.handler(context, { projectId: 'p' });
+    expect(drc?.violations).toEqual([expect.objectContaining({ ...expected, rule: 'Clearance' })]);
+
+    const erc = await registry.get('easyeda_erc_run')?.handler(context, { projectId: 'p', scope: 'focused' });
+    expect(erc?.violations).toEqual([expect.objectContaining({ ...expected, rule: 'Clearance' })]);
+  });
+
   it('easyeda_erc_run reports explicit focused scope metadata on success', async () => {
     const tool = registry.get('easyeda_erc_run');
     bridgeCall.mockResolvedValue({ violations: [], errorCount: 0, warningCount: 0 });

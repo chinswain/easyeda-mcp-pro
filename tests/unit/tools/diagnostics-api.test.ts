@@ -26,6 +26,23 @@ function createDevRegistry(): ToolRegistry {
 }
 
 describe('diagnostics API tools', () => {
+  it('requires confirmation for a copper rebuild and forwards completeness metadata', async () => {
+    const tool = createDevRegistry().get('easyeda_api_call');
+    const bridgeCall = vi
+      .fn()
+      .mockResolvedValue({ result: {}, serialization: { maxDepth: 20, incomplete: true } });
+    const args = [{ primitiveId: 'pour-1', pcbUuid: 'copy' }];
+    const path = 'PCB_PrimitivePour.rebuildCopperRegion';
+    expect(await tool?.handler(createDevContext(bridgeCall), { path, args })).toMatchObject({
+      ok: false,
+      requires_confirmation: true,
+    });
+    expect(bridgeCall).not.toHaveBeenCalled();
+    expect(
+      await tool?.handler(createDevContext(bridgeCall), { path, args, confirmWrite: true }),
+    ).toMatchObject({ ok: true, serialization: { incomplete: true } });
+    expect(bridgeCall).toHaveBeenCalledWith('api.call', { path, args });
+  });
   it('registers the read-only schematic wire probe in dev profile', async () => {
     const config = EnvSchema.parse({ NODE_ENV: 'test', TOOL_PROFILE: 'dev' });
     const registry = new ToolRegistry();
