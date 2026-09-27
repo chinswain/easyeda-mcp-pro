@@ -125,3 +125,33 @@ describe('agentic write results', () => {
     expect(guardOf({ projectId: 'current', boardName: 'B' })).toEqual({ expect: { projectId: undefined, boardName: 'B' } });
   });
 });
+
+describe('unknown parameters and document focus', () => {
+  it('rejects keys the schema would silently strip, and maps singular designators', async () => {
+    const s = lenientInputSchema(z.object({ projectId: z.string(), primitiveIds: z.array(z.string()).optional() }));
+    const bad = await s['~standard'].validate({ designator: 'U2' });
+    expect(bad.issues?.[0]?.message).toContain('Unknown parameter "designator"');
+    const refs = lenientInputSchema(z.object({ references: z.array(z.string()) }));
+    expect(await refs['~standard'].validate({ designator: 'U1' })).toEqual({ value: { references: ['U1'] } });
+  });
+
+  it('focuses the sibling document before schematic/PCB calls', async () => {
+    const { ensureDocumentFocus, wantedDocumentType } = await import('../../../src/server/auto-focus.js');
+    expect(wantedDocumentType('schematic.searchDevice')).toBeUndefined();
+    expect(wantedDocumentType('board.getDimensions')).toBe(3);
+    expect(wantedDocumentType('api.call', { path: 'eda.sch_PrimitiveComponent.get' })).toBe(1);
+    expect(wantedDocumentType('api.call', { path: 'DMT_Board.getAllBoardsInfo' })).toBeUndefined();
+    const boards = [{ pcb: { uuid: 'pcb1' }, schematic: { page: [{ uuid: 'page1' }] } }];
+    const call = vi.fn(async (_m: string, p?: unknown) => {
+      const path = (p as { path: string }).path;
+      if (path.endsWith('getCurrentDocumentInfo')) return { result: { documentType: 3, uuid: 'pcb1' } };
+      if (path.endsWith('getAllBoardsInfo')) return { result: boards };
+      return { result: 'ok' };
+    });
+    await ensureDocumentFocus(call, 'schematic.listNets');
+    expect(call).toHaveBeenLastCalledWith('api.call', { path: 'DMT_EditorControl.openDocument', args: ['page1'] });
+    call.mockClear();
+    await ensureDocumentFocus(call, 'pcb.listTracks');
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+});

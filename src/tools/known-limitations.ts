@@ -31,11 +31,11 @@ export const KNOWN_LIMITATIONS: Array<{ area: string; limitation: string; workar
       'easyeda_pcb_modify_via deletes and recreates the via when x/y change and returns the new primitiveId (recreated: true).',
   },
   {
-    area: 'pcb-write',
+    area: 'bridge',
     limitation:
-      'DMT_EditorControl.openDocument(uuid) does not focus the PCB tab, so PCB_* calls fail with "Cannot read properties of null".',
+      'Schematic and PCB APIs act on the focused tab. The server switches to the same board\'s schematic page or PCB before each call; it cannot pick a board you have not opened.',
     workaround:
-      'Call DMT_EditorControl.activateDocument("<docUuid>@<projectUuid>") (tabId form) and confirm with DMT_SelectControl.getCurrentDocumentInfo (documentType 3 = PCB).',
+      'Open any document of the target board first, or DMT_EditorControl.openDocument("<pageOrPcbUuid>"); DMT_Board.getAllBoardsInfo lists them. DMT_SelectControl.getCurrentDocumentInfo: documentType 1 = schematic page, 3 = PCB.',
   },
   {
     area: 'profile',

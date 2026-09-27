@@ -376,7 +376,7 @@ function registerSchematicReadTools(
     title: 'List schematic components',
     description:
       'List schematic components with IDs, references, values, footprints, placement, and project-instance device IDs. ' +
-      'Omitted scope preserves legacy all-pages; focused/all_pages are supported, pageUuid is not. ' +
+      'Omitted scope reads the focused page. all_pages uses EasyEDA recursive getAll, which also returns other boards’ schematics in the project; pageUuid is not supported. ' +
       'Project-instance device IDs are not valid place_component deviceItem values; use schematic_search_device.',
     profile: 'core',
     evidence: ['official-docs'],

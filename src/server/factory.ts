@@ -29,6 +29,7 @@ import { MouserClient } from '../vendors/mouser/client.js';
 import { DigiKeyClient } from '../vendors/digikey/client.js';
 import { createFileVendorCache } from '../vendors/cache.js';
 import { configureVendorRateLimit } from '../vendors/base-http-client.js';
+import { ensureDocumentFocus } from './auto-focus.js';
 
 export interface CreateServerOptions {
   remoteGateway?: RemoteGateway;
@@ -140,6 +141,7 @@ export async function createServer(
       },
       call: async (method, params, opts) => {
         logger.debug({ method }, 'bridge call');
+        await ensureDocumentFocus((m, p) => bridge.call(m, p), method, params);
         return bridge.call(method, params, opts);
       },
       get uptimeMs() {

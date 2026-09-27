@@ -63,9 +63,9 @@ async function listAllComponents(
   let offset = 0;
   for (;;) {
     const page = await ctx.bridge.call<
-      { projectId: string; limit: number; offset: number },
+      { projectId: string; limit: number; offset: number; allPages: boolean },
       BridgeComponentPage
-    >('schematic.listComponents', { projectId, limit: pageSize, offset });
+    >('schematic.listComponents', { projectId, limit: pageSize, offset, allPages: false });
     const items = page?.items ?? [];
     all.push(...items);
     const total = page?.total ?? items.length;

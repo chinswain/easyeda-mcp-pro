@@ -42,7 +42,7 @@ export async function resolveComponentRef(
   // ponytail: one full list per resolve; cache per call if this shows up in traces.
   const listed = await ctx.bridge.call<Record<string, unknown>, { items?: unknown[] }>(
     method,
-    doc === 'schematic' ? { limit: 5000, offset: 0 } : {},
+    doc === 'schematic' ? { limit: 5000, offset: 0, allPages: false } : {},
   );
   const hits = (Array.isArray(listed?.items) ? listed.items : []).filter(
     (c): c is Record<string, unknown> =>

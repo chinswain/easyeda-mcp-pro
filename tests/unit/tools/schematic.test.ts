@@ -1945,6 +1945,7 @@ describe('Schematic Tools', () => {
         projectId: 'proj-123',
         limit: 5000,
         offset: 0,
+        allPages: false,
       });
       expect(result).toMatchObject({
         project_id: 'proj-123',
