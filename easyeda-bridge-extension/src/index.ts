@@ -1056,6 +1056,14 @@ function handleMessage(raw: string): InboundMessageType {
     case 'request':
       void handleRequest(message as BridgeRequest);
       return 'request';
+    case 'replaced':
+      // Another EasyEDA tab took the bridge. Stay down; reconnecting would
+      // replace it in turn and loop. Connect from the menu to take it back.
+      log('Bridge taken over by another EasyEDA instance; auto-reconnect paused');
+      manualDisconnectRequested = true;
+      stopHeartbeat();
+      closeSocket();
+      return 'ignored';
     default:
       return 'ignored';
   }

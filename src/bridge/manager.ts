@@ -548,6 +548,13 @@ export class BridgeManager extends EventEmitter {
     if (previousWs && previousWs !== ws) {
       logger.info('replacing existing bridge client connection');
       this.rejectPending(new Error('Bridge connection replaced by a new client.'));
+      // The EasyEDA register() socket path has no close callback, so tell the
+      // old plugin instance directly; otherwise it reconnects and replaces us back.
+      try {
+        previousWs.send(JSON.stringify({ type: 'replaced' }));
+      } catch {
+        // socket already gone
+      }
       previousWs.close(4000, 'Replaced by new bridge client');
       this.stopHeartbeat();
       this.stopStaleSweep();

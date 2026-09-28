@@ -172,10 +172,12 @@ describe('BridgeManager', () => {
     expect(manager.connected).toBe(true);
 
     const firstClosed = waitForClose(first);
+    const firstReplaced = waitForMessage(first);
     const second = await openSocket(port);
     sendHandshake(second);
     await expect(waitForMessage(second)).resolves.toMatchObject({ type: 'hello' });
 
+    await expect(firstReplaced).resolves.toMatchObject({ type: 'replaced' });
     await expect(firstClosed).resolves.toBe(4000);
     expect(manager.connected).toBe(true);
     expect(manager.activePort).toBe(port);
