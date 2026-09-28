@@ -303,6 +303,7 @@ describe('easyeda_schematic_batch_write', () => {
       if (method === 'schematic.listPrimitiveIds') {
         return { primitiveKind: params.primitiveKind, primitiveIds: [...snapshots.keys()] };
       }
+      if (method === 'system.inspectWires') return { total: 0, samples: [] };
       if (method === 'schematic.addWire') {
         const snapshot = {
           schemaVersion: 'schematic-primitive-snapshot/v1',
@@ -518,6 +519,7 @@ describe('easyeda_schematic_batch_write', () => {
             .map((snapshot) => snapshot.primitiveId),
         };
       }
+      if (method === 'system.inspectWires') return { total: 0, samples: [] };
       if (method === 'schematic.addWire') {
         snapshots.set('wire-1', {
           schemaVersion: 'schematic-primitive-snapshot/v1',
@@ -574,6 +576,62 @@ describe('easyeda_schematic_batch_write', () => {
       results: [
         { operation_id: 'create-wire', status: 'rolled-back' },
         { operation_id: 'modify-text', status: 'failed' },
+      ],
+    });
+  });
+
+  it('records a wire that EasyEDA merges into an existing one as a modify and restores it on rollback', async () => {
+    const original = {
+      schemaVersion: 'schematic-primitive-snapshot/v1',
+      primitiveId: 'wire-0',
+      primitiveKind: 'wire',
+      property: { line: [[10, 0, 20, 0]], net: 'N1' },
+    };
+    let wire: Record<string, any> = structuredClone(original);
+    bridgeCall.mockImplementation(async (method: string, params: any) => {
+      if (method === 'system.inspectWires') {
+        // EasyEDA stores segments flat and reversed.
+        return { total: 1, samples: [{ primitiveId: 'wire-0', line: [20, 0, 10, 0] }] };
+      }
+      if (method === 'schematic.listPrimitiveIds') return { primitiveIds: ['wire-0'] };
+      if (method === 'schematic.addWire') {
+        wire.property.line = [[0, 0, 10, 0], [10, 0, 20, 0]];
+        return { primitiveId: 'wire-0' };
+      }
+      if (method === 'schematic.getPrimitiveSnapshot') return structuredClone(wire);
+      if (method === 'schematic.restorePrimitiveSnapshot') {
+        wire = structuredClone(params.snapshot);
+        return { restored: true, snapshot: structuredClone(wire) };
+      }
+      if (method === 'schematic.modifyPrimitive') throw new Error('write rejected');
+      throw new Error(`Unexpected bridge method ${method}`);
+    });
+
+    const result = await registry.get('easyeda_schematic_batch_write')?.handler(context, {
+      projectId: 'project-1',
+      operations: [
+        {
+          action: 'create',
+          primitiveKind: 'wire',
+          points: [
+            { x: 0, y: 0 },
+            { x: 10, y: 0 },
+          ],
+          netName: 'N1',
+        },
+        { action: 'modify', primitiveId: 'text-1', property: { content: 'after' } },
+      ],
+      atomic: true,
+      dryRun: false,
+      confirmWrite: true,
+    });
+
+    expect(wire).toEqual(original);
+    expect(result).toMatchObject({
+      rolled_back: true,
+      results: [
+        { operation_id: 'op1', status: 'rolled-back', primitive_id: 'wire-0' },
+        { operation_id: 'op2', status: 'failed' },
       ],
     });
   });

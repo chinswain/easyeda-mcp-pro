@@ -1695,7 +1695,8 @@ async function dispatch(method: string, params: Record<string, unknown> = {}): P
       const nfX = params.x as number;
       const nfY = params.y as number;
       const nfName = params.netName as string;
-      const nfRotation = (params.rotation as number) ?? 0;
+      // createNetFlag rotates the opposite way to getState_Rotation (verified live: 90 is stored as 270).
+      const nfRotation = (360 - (((params.rotation as number) ?? 0) % 360)) % 360;
       // EasyEDA Pro exposes two distinct primitives here (verified against the
       // live runtime inventory):
       //   - SCH_PrimitiveComponent.createNetFlag(identification, net, x, y, rotation, mirror)
@@ -1739,7 +1740,8 @@ async function dispatch(method: string, params: Record<string, unknown> = {}): P
       const npX = params.x as number;
       const npY = params.y as number;
       const npName = params.netName as string;
-      const npRotation = (params.rotation as number) ?? 0;
+      // createNetPort rotates the opposite way to getState_Rotation (verified live: 90 is stored as 270).
+      const npRotation = (360 - (((params.rotation as number) ?? 0) % 360)) % 360;
       // SCH_PrimitiveComponent.createNetPort(direction, net, x, y, rotation, mirror)
       // where direction is one of IN / OUT / BI. Map the MCP portType onto it.
       const portTypeMap: Record<string, 'IN' | 'OUT' | 'BI'> = {

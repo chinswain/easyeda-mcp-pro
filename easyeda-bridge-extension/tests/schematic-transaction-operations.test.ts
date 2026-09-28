@@ -1,5 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createSchematicTransactionOperations } from '../src/schematic-transaction-operations.js';
+import {
+  createSchematicTransactionOperations,
+  storedWireSegments,
+  wireSegments,
+} from '../src/schematic-transaction-operations.js';
+
+it('matches a stored wire (flat, reversed segments) to the polyline that created it', () => {
+  // Verified live: create [1200,900,1300,900,1300,1000] is stored as below.
+  expect(storedWireSegments([1300, 900, 1200, 900, 1300, 1000, 1300, 900])).toEqual(
+    wireSegments([1200, 900, 1300, 900, 1300, 1000], false),
+  );
+  expect(storedWireSegments([[1300, 1000, 1300, 900]])).toEqual([[1300, 900, 1300, 1000]]);
+});
 
 function bridgeError(code: string, message: string, suggestion: string, data?: unknown): Error {
   return Object.assign(new Error(message), { code, suggestion, data });
@@ -759,7 +771,7 @@ describe('schematic transaction operations', () => {
     });
     await expect(operations.getPrimitiveSnapshot('wire-1', 'wire')).resolves.toMatchObject({
       primitiveKind: 'wire',
-      property: { line: [0, 0, 5, 0], net: 'GND' },
+      property: { line: [[0, 0, 5, 0]], net: 'GND' },
     });
   });
 
@@ -933,7 +945,7 @@ describe('schematic transaction operations', () => {
       ok: true,
     });
     expect(modify).toHaveBeenCalledWith('wire-1', {
-      line: [0, 0, 1, 1],
+      line: [[0, 0, 1, 1]],
       net: 'NEW',
       color: '#000',
       lineWidth: 1,

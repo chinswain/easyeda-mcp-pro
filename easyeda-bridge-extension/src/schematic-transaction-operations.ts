@@ -385,7 +385,7 @@ export function createSchematicTransactionOperations(
       primitiveId,
       primitiveKind: 'wire',
       property: compactDefinedRecord({
-        line: safeGetState(current, 'Line'),
+        line: storedWireSegments(safeGetState(current, 'Line')),
         net: safeGetState(current, 'Net'),
         color: safeGetState(current, 'Color'),
         lineWidth: safeGetState(current, 'LineWidth'),
@@ -956,7 +956,8 @@ export function createSchematicTransactionOperations(
     if (!current) return NOT_HANDLED;
 
     const result = await primitiveClass.modify(primitiveId, {
-      line: safeGetState(current, 'Line'),
+      // A flat line is read as a polyline, so the stored segment list goes back nested.
+      line: storedWireSegments(safeGetState(current, 'Line')),
       net: safeGetState(current, 'Net'),
       color: safeGetState(current, 'Color'),
       lineWidth: safeGetState(current, 'LineWidth'),
@@ -964,26 +965,20 @@ export function createSchematicTransactionOperations(
       ...property,
     });
     if (property.line !== undefined) {
-      // EasyEDA can report success on a multi-segment wire and keep the old line.
-      const kept = wirePoints(safeGetState(await primitiveClass.get(primitiveId), 'Line'));
-      if (kept !== wirePoints(property.line)) {
-        throw new Error(
-          `Wire ${primitiveId} line change did not take; EasyEDA kept ${kept}. Delete the wire and draw the new path.`,
-        );
+      // EasyEDA can report success on a multi-segment wire and keep the old line. Modify is
+      // also applied asynchronously, so poll the read-back briefly.
+      const wanted = JSON.stringify(wireSegments(property.line, false));
+      let kept = '';
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        kept = JSON.stringify(storedWireSegments(safeGetState(await primitiveClass.get(primitiveId), 'Line')));
+        if (kept === wanted) return handled(result);
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
       }
+      throw new Error(
+        `Wire ${primitiveId} line change did not take; EasyEDA kept ${kept}. Delete the wire and draw the new path.`,
+      );
     }
     return handled(result);
-  }
-
-  /** Flatten a Line state (flat, pairs or per-segment arrays) to a point string without repeats. */
-  function wirePoints(line: unknown): string {
-    const nums = Array.isArray(line) ? (line.flat(Infinity) as unknown[]).map(Number) : [];
-    const points: string[] = [];
-    for (let i = 0; i + 1 < nums.length; i += 2) {
-      const point = `${nums[i]},${nums[i + 1]}`;
-      if (points[points.length - 1] !== point) points.push(point);
-    }
-    return points.join(' ');
   }
 
   function textModificationProperties(
@@ -1143,4 +1138,28 @@ export function createSchematicTransactionOperations(
     restorePrimitiveSnapshot,
     modifyPrimitive,
   };
+}
+
+/** EasyEDA stores a wire as a flat list of segments (x1,y1,x2,y2 each, in any order and
+ *  direction). Canonical form: nested segments, endpoints and segments sorted. */
+export function storedWireSegments(line: unknown): number[][] {
+  return wireSegments(line, true);
+}
+
+/** Nested arrays are polylines each; a flat array is a polyline, or a segment list when stored. */
+export function wireSegments(line: unknown, stored: boolean): number[][] {
+  if (!Array.isArray(line)) return [];
+  const nested = line.some(Array.isArray);
+  const parts = nested ? line.filter(Array.isArray) : [line];
+  const segments: number[][] = [];
+  for (const part of parts) {
+    const nums = (part.flat(Infinity) as unknown[]).map(Number);
+    const step = stored && !nested ? 4 : 2;
+    for (let i = 0; i + 3 < nums.length; i += step) {
+      const [x1, y1, x2, y2] = nums.slice(i, i + 4) as [number, number, number, number];
+      if (x1 === x2 && y1 === y2) continue;
+      segments.push(x1 < x2 || (x1 === x2 && y1 < y2) ? [x1, y1, x2, y2] : [x2, y2, x1, y1]);
+    }
+  }
+  return segments.sort((a, b) => a.join(',').localeCompare(b.join(',')));
 }

@@ -323,11 +323,93 @@ async function pollAddedPrimitiveIds(
   return [];
 }
 
+type Segment = [number, number, number, number];
+
+function onSegment(x: number, y: number, [x1, y1, x2, y2]: Segment): boolean {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lengthSquared = dx * dx + dy * dy;
+  const t = lengthSquared === 0 ? 0 : Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / lengthSquared));
+  return Math.hypot(x - (x1 + t * dx), y - (y1 + t * dy)) <= 0.01;
+}
+
+function toSegments(nums: number[]): Segment[] {
+  const segments: Segment[] = [];
+  for (let i = 0; i + 3 < nums.length; i += 4) segments.push(nums.slice(i, i + 4) as Segment);
+  return segments;
+}
+
+function segmentsTouch(a: Segment, b: Segment): boolean {
+  return (
+    onSegment(a[0], a[1], b) || onSegment(a[2], a[3], b) || onSegment(b[0], b[1], a) || onSegment(b[2], b[3], a)
+  );
+}
+
+/** Wires EasyEDA would merge a new wire into: any that shares a point with it. Stored lines are
+ *  flat segment lists (x1,y1,x2,y2 per segment). */
+async function touchingWireIds(context: ToolContext, points: Array<{ x: number; y: number }>): Promise<string[]> {
+  const created = toSegments(points.flatMap((p, i) => (i === 0 || i === points.length - 1 ? [p.x, p.y] : [p.x, p.y, p.x, p.y])));
+  const touching: string[] = [];
+  for (let offset = 0, total = 1; offset < total; offset += 50) {
+    const page = (await context.bridge.call('system.inspectWires', { limit: 50, offset })) as {
+      total?: number;
+      samples?: Array<{ primitiveId?: string; line?: unknown }>;
+    };
+    total = page.total ?? 0;
+    for (const wire of page.samples ?? []) {
+      const stored = toSegments(Array.isArray(wire.line) ? (wire.line.flat(Infinity) as unknown[]).map(Number) : []);
+      if (wire.primitiveId && stored.some((s) => created.some((c) => segmentsTouch(s, c)))) {
+        touching.push(wire.primitiveId);
+      }
+    }
+  }
+  return touching;
+}
+
+/** EasyEDA merges a wire that touches an existing one into it and returns the existing ID, so
+ *  the create is recorded as a modify of that wire; rollback then restores it instead of
+ *  deleting it. ponytail: one touched wire only; merging several would delete all but one. */
+async function executeMergingWireCreate(
+  context: ToolContext,
+  transactionId: string,
+  operation: CreateOperation & { primitiveKind: 'wire' },
+  targetId: string,
+) {
+  const request = bridgeCreateRequest(operation);
+  const beforeIds = new Set(await listPrimitiveIds(context.bridge, 'wire'));
+  const executed = await getGlobalTransactionManager().runModify(transactionId, targetId, {
+    getSnapshot: async () => getPrimitiveSnapshot(context.bridge, targetId, 'wire'),
+    apply: async () => {
+      const result = await context.bridge.call(request.method, request.params);
+      const added = await pollAddedPrimitiveIds(context, 'wire', beforeIds, CREATE_RECONCILE_FAILURE_ATTEMPTS);
+      if (added.length > 0) {
+        for (const id of added) await deletePrimitiveExact(context.bridge, id).catch(() => undefined);
+        throw new Error(`Wire ${operation.operationId} touches wire ${targetId} but EasyEDA did not merge them`);
+      }
+      return result;
+    },
+    restore: async (snapshot) => context.bridge.call('schematic.restorePrimitiveSnapshot', { snapshot }),
+  });
+  return { targetId, operation: executed.operation };
+}
+
 async function executeCreate(
   context: ToolContext,
   transactionId: string,
   operation: CreateOperation,
 ) {
+  if (operation.primitiveKind === 'wire') {
+    const touching = await touchingWireIds(context, operation.points);
+    if (touching.length > 1) {
+      throw new TransactionError(
+        'TRANSACTION_OPERATION_FAILED',
+        `Wire ${operation.operationId} touches wires ${touching.join(', ')}; EasyEDA would merge them into one, which a batch cannot undo. Draw it with easyeda_schematic_add_wire.`,
+        { touchingWireIds: touching },
+      );
+    }
+    const [mergeTarget] = touching;
+    if (mergeTarget) return executeMergingWireCreate(context, transactionId, operation, mergeTarget);
+  }
   const manager = getGlobalTransactionManager();
   const beforeIds = new Set(await listPrimitiveIds(context.bridge, operation.primitiveKind));
   const request = bridgeCreateRequest(operation);
@@ -763,7 +845,9 @@ async function failedBatchResponse(
     results,
     error_code: error instanceof TransactionError ? error.code : 'BATCH_WRITE_FAILED',
     error: error instanceof Error ? error.message : String(error),
-    rollback_error: rollback.rollbackError,
+    rollback_error:
+      rollback.rollbackError &&
+      `${rollback.rollbackError}. The document stays locked; check the listed primitives, then call easyeda_project_rollback_transaction with abandon: true.`,
   };
 }
 

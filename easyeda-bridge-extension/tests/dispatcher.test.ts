@@ -373,6 +373,24 @@ describe('createDispatcher', () => {
     });
   });
 
+  it('inverts rotation for createNetFlag and createNetPort, which rotate the opposite way', async () => {
+    const createNetFlag = vi.fn(async () => ({ primitiveId: 'f1' }));
+    const createNetPort = vi.fn(async () => ({ primitiveId: 'p1' }));
+    const dispatcher = createDispatcher(
+      makeToolkit({ SCH_PrimitiveComponent: { createNetFlag, createNetPort } }),
+    );
+    await dispatcher.dispatch('schematic.createNetFlag', {
+      netName: 'VCC',
+      x: 0,
+      y: 0,
+      rotation: 90,
+      identification: 'Power',
+    });
+    await dispatcher.dispatch('schematic.createNetPort', { netName: 'IO', x: 0, y: 0, rotation: 0 });
+    expect(createNetFlag).toHaveBeenCalledWith('Power', 'VCC', 0, 0, 270);
+    expect(createNetPort.mock.calls[0]?.[4]).toBe(0);
+  });
+
   it('resolves EasyEDA classes through the toolkit, not bare globals', async () => {
     const getAll = vi.fn(async () => [fakeWire('w1', 'NET_A', [0, 0, 10, 0])]);
     const dispatcher = createDispatcher(makeToolkit({ SCH_PrimitiveWire: { getAll } }));
@@ -2393,7 +2411,7 @@ describe('createDispatcher', () => {
         primitiveId: 'w1',
         primitiveKind: 'wire',
         property: {
-          line: [0, 0, 20, 0],
+          line: [[0, 0, 20, 0]],
           net: 'NET_A',
           color: '#000000',
           lineWidth: 1,
@@ -2808,7 +2826,7 @@ describe('createDispatcher', () => {
         snapshot: {
           primitiveId: 'wire-new',
           primitiveKind: 'wire',
-          property: { line: [0, 0, 10, 0], net: 'NET_A' },
+          property: { line: [[0, 0, 10, 0]], net: 'NET_A' },
         },
       });
     });
