@@ -124,6 +124,7 @@ describe('placement', () => {
       primitiveId: 'r1', signature: 'plain-array', verified: true, actual: { layer: 12 },
     });
     expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual({ native: [0, 0, 'L', 10, 0, 10, 10] });
 
     const failing = createSubject({
       'PCB_MathPolygon.createPolygon': () => ({}),
@@ -286,26 +287,27 @@ describe('attributes, export and schematic', () => {
   });
 
   it('schematic wire, label and rename ops verify by read-back', async () => {
+    // Shapes as read live from EasyEDA Pro 3.2.x: `Line` flat or nested, net label = wire Net.
     let wires: any[] = [
-      { state: { PrimitiveId: 'w1', Net: 'USB_DP', Points: [0, 0, 100, 0] } },
-      { state: { PrimitiveId: 'w2', Net: 'GND', Points: [{ x: 500, y: 500 }, { x: 600, y: 500 }] } },
+      { state: { PrimitiveId: 'w1', Net: 'USB_DP', Line: [0, 0, 100, 0] } },
+      { state: { PrimitiveId: 'w2', Net: 'GND', Line: [[500, 500, 600, 500]] } },
+      { state: { PrimitiveId: 'w3', Net: '', Line: [1, 2, 50, 2] } },
+      { state: { PrimitiveId: 'w4', Net: 'D+', Line: [900, 0, 950, 0] } },
     ];
-    const labels: any[] = [{ state: { PrimitiveId: 'n1', Key: 'Net Label', Value: 'D+' } }, { state: { PrimitiveId: 'n2', Key: 'Name', Value: 'GND' } }];
     const { operations } = createSubject({
       'SCH_PrimitiveWire.getAll': () => wires,
       'SCH_PrimitiveWire.delete': (ids: string[]) => { wires = wires.filter((w) => !ids.includes(w.state.PrimitiveId)); },
       'SCH_PrimitiveWire.get': (id: string) => wires.find((w) => w.state.PrimitiveId === id) ?? null,
-      'SCH_PrimitiveAttribute.createNetLabel': () => 'n9',
-      'SCH_PrimitiveAttribute.get': (id: string) => (id === 'n9' ? { state: { Value: 'USB_DP' } } : labels.find((l) => l.state.PrimitiveId === id)),
-      'SCH_PrimitiveAttribute.getAll': () => labels,
-      'SCH_PrimitiveAttribute.modify': (id: string, p: any) => { labels.find((l) => l.state.PrimitiveId === id).state.Value = p.value; },
+      'SCH_PrimitiveWire.modify': (id: string, p: any) => { wires.find((w) => w.state.PrimitiveId === id).state.Net = p.net; },
       'SCH_PrimitiveComponent.modify': () => true,
       'SCH_PrimitiveComponent.get': () => ({ state: { DeviceUuid: { uuid: 'dev2', libraryUuid: 'lib' } } }),
     });
     await expect(operations.schematicWiresAtPin({ x: 100, y: 0 })).resolves.toMatchObject({ items: [{ primitiveId: 'w1', net: 'USB_DP' }] });
+    await expect(operations.schematicWiresAtPin({ x: 600, y: 500 })).resolves.toMatchObject({ items: [{ primitiveId: 'w2' }] });
     await expect(operations.schematicDeleteWire({ primitiveIds: ['w1'] })).resolves.toMatchObject({ deleted: ['w1'], verified: true });
-    await expect(operations.schematicSetNetLabel({ netName: 'USB_DP', x: 1, y: 2 })).resolves.toMatchObject({ primitiveId: 'n9', verified: true });
-    await expect(operations.schematicRenameNet({ from: 'D+', to: 'USB_DP' })).resolves.toMatchObject({ labelIds: ['n1'], verified: true });
+    await expect(operations.schematicSetNetLabel({ netName: 'USB_DP', x: 1, y: 2 })).resolves.toMatchObject({ primitiveId: 'w3', verified: true });
+    await expect(operations.schematicSetNetLabel({ netName: 'X', x: 7000, y: 7000 })).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
+    await expect(operations.schematicRenameNet({ from: 'D+', to: 'USB_DN' })).resolves.toMatchObject({ labelIds: ['w4'], verified: true });
     await expect(operations.schematicComponentReplace({ primitiveId: 'c1', property: { deviceUuid: 'dev2' } })).resolves.toMatchObject({ verified: true });
   });
 });

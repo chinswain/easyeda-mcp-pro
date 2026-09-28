@@ -546,7 +546,7 @@ export function registerPcbAgenticTools(registry: ToolRegistry, _config: EnvConf
     title: 'Manufacturing check',
     description: 'Native DRC plus a fab capability table (track width, via hole/diameter, copper layer count). Profiles: ' + Object.keys(MFG_PROFILES).join(', ') + '.',
     group: 'pcb-read',
-    input: { profile: z.string().default('JLCPCB 4-layer'), ...pageInput },
+    input: { profile: z.string().optional().describe('Omit to pick the JLCPCB profile matching the board copper layer count.'), ...pageInput },
     output: {
       profile: z.string(), limits: z.unknown(), passed: z.boolean().nullable(),
       drc: z.object({ passed: z.boolean().nullable(), error_count: z.number().optional(), warning_count: z.number().optional(), total_violations: z.number().optional(), error: z.string().optional() }),
@@ -554,8 +554,14 @@ export function registerPcbAgenticTools(registry: ToolRegistry, _config: EnvConf
       copper_layers: z.number().nullable(), ...pageSchema,
     },
     run: async (ctx, p) => {
-      const limits = MFG_PROFILES[p.profile];
-      if (!limits) throw new ToolFailure('UNKNOWN_PROFILE', `Unknown profile "${p.profile}".`, `Use one of ${Object.keys(MFG_PROFILES).join(', ')}.`);
+      let copper_layers: number | null = null;
+      try {
+        const s = await call(ctx, 'board.getStackup', { projectId: p.projectId });
+        copper_layers = s.copperLayers ?? s.copper_layers ?? (Array.isArray(s.layers) ? s.layers.filter((l: Any) => /copper|signal|plane/i.test(String(l.type ?? ''))).length || null : null);
+      } catch { /* stackup read is optional */ }
+      const profile = p.profile ?? (copper_layers !== null && copper_layers <= 2 ? 'JLCPCB 2-layer' : 'JLCPCB 4-layer');
+      const limits = MFG_PROFILES[profile];
+      if (!limits) throw new ToolFailure('UNKNOWN_PROFILE', `Unknown profile "${profile}".`, `Use one of ${Object.keys(MFG_PROFILES).join(', ')}.`);
       const items: Any[] = [];
       const tracks = await call(ctx, 'pcb.listTracks', { limit: 100000, expect: expectOf(p) });
       for (const t of (tracks.items ?? []) as Any[]) {
@@ -568,11 +574,6 @@ export function registerPcbAgenticTools(registry: ToolRegistry, _config: EnvConf
         if (hole !== undefined && hole < limits.min_via_hole_mm) items.push({ kind: 'via_hole', primitiveId: v.primitiveId, value_mm: hole, limit_mm: limits.min_via_hole_mm, message: `Via ${v.primitiveId} hole ${hole} mm < ${limits.min_via_hole_mm} mm` });
         if (dia !== undefined && dia < limits.min_via_diameter_mm) items.push({ kind: 'via_diameter', primitiveId: v.primitiveId, value_mm: dia, limit_mm: limits.min_via_diameter_mm, message: `Via ${v.primitiveId} diameter ${dia} mm < ${limits.min_via_diameter_mm} mm` });
       }
-      let copper_layers: number | null = null;
-      try {
-        const s = await call(ctx, 'board.getStackup', { projectId: p.projectId });
-        copper_layers = s.copperLayers ?? s.copper_layers ?? (Array.isArray(s.layers) ? s.layers.filter((l: Any) => /copper|signal|plane/i.test(String(l.type ?? ''))).length || null : null);
-      } catch { /* stackup read is optional */ }
       if (copper_layers !== null && copper_layers !== limits.copper_layers) items.push({ kind: 'copper_layers', value_mm: copper_layers, limit_mm: limits.copper_layers, message: `Board has ${copper_layers} copper layers, profile expects ${limits.copper_layers}` });
       let drc: Any;
       try {
@@ -583,7 +584,7 @@ export function registerPcbAgenticTools(registry: ToolRegistry, _config: EnvConf
       } catch (err) {
         drc = { passed: null, error: (err as Error).message };
       }
-      return { profile: p.profile, limits, drc, copper_layers, passed: drc.passed === null ? null : drc.passed && items.length === 0, ...paginate(items, p) };
+      return { profile, limits, drc, copper_layers, passed: drc.passed === null ? null : drc.passed && items.length === 0, ...paginate(items, p) };
     },
   });
 

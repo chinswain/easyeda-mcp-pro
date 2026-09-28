@@ -16,14 +16,14 @@ function makeOperations() {
 }
 
 describe('export operations', () => {
-  it('exports Gerbers with the projectId string as the native file-name argument', async () => {
+  it('exports Gerbers without passing the projectId as the native file name', async () => {
     const { callFirst, normalizeBinaryResult, operations } = makeOperations();
 
     await expect(operations.exportGerbers({ projectId: 'proj-123' })).resolves.toEqual({
       value: 'native-result',
       fileName: 'gerbers.zip',
     });
-    expect(callFirst).toHaveBeenCalledWith(['PCB_ManufactureData.getGerberFile'], 'proj-123');
+    expect(callFirst).toHaveBeenCalledWith(['PCB_ManufactureData.getGerberFile'], undefined);
     expect(normalizeBinaryResult).toHaveBeenCalledWith('native-result', 'gerbers.zip');
   });
 
@@ -48,7 +48,7 @@ describe('export operations', () => {
     expect(callFirst).toHaveBeenNthCalledWith(2, ['PCB_ManufactureData.getDsnFile'], undefined);
   });
 
-  it('exports pick-and-place with the projectId string and preserves the output-name fallback', async () => {
+  it('exports pick-and-place without the projectId as file name and preserves the output-name fallback', async () => {
     const { callFirst, normalizeBinaryResult, operations } = makeOperations();
 
     await operations.exportPickPlace({ projectId: 'proj-123', format: 'csv' });
@@ -57,12 +57,12 @@ describe('export operations', () => {
     expect(callFirst).toHaveBeenNthCalledWith(
       1,
       ['PCB_ManufactureData.getPickAndPlaceFile'],
-      'proj-123',
+      undefined,
     );
     expect(callFirst).toHaveBeenNthCalledWith(
       2,
       ['PCB_ManufactureData.getPickAndPlaceFile'],
-      'proj-456',
+      undefined,
     );
     expect(normalizeBinaryResult).toHaveBeenNthCalledWith(1, 'native-result', 'pick-place.csv');
     expect(normalizeBinaryResult).toHaveBeenNthCalledWith(2, 'native-result', 'pick-place.csv');

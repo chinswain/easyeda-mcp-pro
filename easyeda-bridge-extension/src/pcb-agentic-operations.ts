@@ -256,9 +256,15 @@ export function createPcbAgenticOperations({
     poly: number[],
     build: (polygon: unknown) => Promise<unknown>,
   ): Promise<{ primitiveId: string; signature: string }> {
+    // Native polygon source format: [x1, y1, 'L', x2, y2, x3, y3, ...].
+    const source = [poly[0], poly[1], 'L', ...poly.slice(2)];
     const attempts: Array<[string, () => Promise<unknown>]> = [
-      ['polygon-object', async () => build(await callFirst(['PCB_MathPolygon.createPolygon', 'pcb_MathPolygon.createPolygon'], poly))],
-      ['plain-array', () => build(poly)],
+      ['polygon-object', async () => {
+        const polygon = await callFirst(['PCB_MathPolygon.createPolygon', 'pcb_MathPolygon.createPolygon'], source);
+        if (!polygon) throw new Error('PCB_MathPolygon.createPolygon returned nothing');
+        return build(polygon);
+      }],
+      ['plain-array', () => build(source)],
     ];
     const errors: string[] = [];
     for (const [signature, run] of attempts) {
@@ -281,8 +287,12 @@ export function createPcbAgenticOperations({
     const poly = flatPolygon(params.points);
     const layer = num(params.layer, 12);
     const rules = Array.isArray(params.rules) && params.rules.length ? params.rules : ['Copper', 'Wire', 'Via', 'Component'];
+    // Rule names map to the runtime enum; without it EasyEDA applies its default rule set.
+    const ruleEnum = (globalThis as any).EPCB_PrimitiveRegionRuleType;
+    const ruleKeys: Record<string, string[]> = { Component: ['NO_COMPONENTS'], Via: ['NO_VIAS'], Wire: ['NO_WIRES'], Copper: ['NO_FILLS', 'NO_POURS'] };
+    const nativeRules = ruleEnum ? (rules as string[]).flatMap((r) => (ruleKeys[r] ?? []).map((k) => ruleEnum[k])).filter((v) => v !== undefined) : undefined;
     const created = await createWithPolygon('Keep-out region', poly, (polygon) =>
-      callFirst(['PCB_PrimitiveRegion.create', 'pcb_PrimitiveRegion.create'], layer, polygon, rules, params.locked === true),
+      callFirst(['PCB_PrimitiveRegion.create', 'pcb_PrimitiveRegion.create'], layer, polygon, nativeRules),
     );
     const readBack = await callFirst(['PCB_PrimitiveRegion.get', 'pcb_PrimitiveRegion.get'], created.primitiveId);
     return { ...created, layer, rules, points: poly, verified: !!readBack, actual: readBack ? { layer: stateOf(readBack, 'Layer') } : null };
@@ -522,21 +532,25 @@ export function createPcbAgenticOperations({
 
   // ── F. schematic ──────────────────────────────────────────────────────
   const wireEnds = (w: unknown): Point[] => {
-    const pts = stateOf(w, 'Points') ?? stateOf(w, 'Polyline') ?? (w as any)?.points;
-    const flat = Array.isArray(pts) ? pts : [];
+    // Live wires keep coordinates in `Line`: flat [x1,y1,x2,y2,...] or nested per segment.
+    const pts = stateOf(w, 'Line') ?? stateOf(w, 'Points') ?? stateOf(w, 'Polyline') ?? (w as any)?.points;
+    const flat = Array.isArray(pts) ? pts.flat() : [];
     const out: Point[] = [];
     if (flat.every((v) => typeof v === 'number')) for (let i = 0; i + 1 < flat.length; i += 2) out.push({ x: flat[i], y: flat[i + 1] });
     else for (const p of flat) if (p && typeof p === 'object') out.push({ x: num((p as any).x), y: num((p as any).y) });
     return out;
   };
 
+  const allWires = async () => {
+    const wires = (await callFirst(['SCH_PrimitiveWire.getAll', 'sch_PrimitiveWire.getAll'])) as any[];
+    return (Array.isArray(wires) ? wires : []).map((w) => ({ primitiveId: String(stateOf(w, 'PrimitiveId') ?? ''), net: String(stateOf(w, 'Net') ?? ''), points: wireEnds(w) }));
+  };
+  const wireNet = async (id: string) => String(stateOf(await callFirst(['SCH_PrimitiveWire.get', 'sch_PrimitiveWire.get'], id), 'Net') ?? '');
+
   async function schematicWiresAtPin(params: Params): Promise<unknown> {
     const x = num(params.x, NaN), y = num(params.y, NaN), tol = num(params.tolerance, 1);
     if (!Number.isFinite(x) || !Number.isFinite(y)) throw invalid('x and y (pin position) are required', 'Get pin positions from easyeda_schematic_component_pins.');
-    const wires = (await callFirst(['SCH_PrimitiveWire.getAll', 'sch_PrimitiveWire.getAll'])) as any[];
-    const items = (Array.isArray(wires) ? wires : [])
-      .map((w) => ({ primitiveId: String(stateOf(w, 'PrimitiveId') ?? ''), net: stateOf(w, 'Net') ?? stateOf(w, 'NetName'), points: wireEnds(w) }))
-      .filter((w) => w.points.some((p) => Math.abs(p.x - x) <= tol && Math.abs(p.y - y) <= tol));
+    const items = (await allWires()).filter((w) => w.points.some((p) => Math.abs(p.x - x) <= tol && Math.abs(p.y - y) <= tol));
     return { x, y, items };
   }
 
@@ -549,28 +563,28 @@ export function createPcbAgenticOperations({
     return { deleted: ids.filter((i) => !remaining.includes(i)), remaining, verified: remaining.length === 0 };
   }
 
+  // A net label in EasyEDA Pro is the Name of the wire it sits on. createNetLabel
+  // returns null and leaves the name empty on 3.2.x, so name the wire directly.
   async function schematicSetNetLabel(params: Params): Promise<unknown> {
-    const net = String(params.netName ?? '');
-    if (!net || !Number.isFinite(num(params.x, NaN)) || !Number.isFinite(num(params.y, NaN))) throw invalid('netName, x and y are required', 'Place the label on a wire end.');
-    const created = await callFirst(['SCH_PrimitiveAttribute.createNetLabel', 'sch_PrimitiveAttribute.createNetLabel'], net, params.x, params.y, params.rotation ?? 0);
-    const id = extractPrimitiveId(created);
-    const readBack = id ? await callFirst(['SCH_PrimitiveAttribute.get', 'sch_PrimitiveAttribute.get'], id) : null;
-    return { primitiveId: id, netName: net, verified: !!readBack, actual: readBack ? { value: stateOf(readBack, 'Value') ?? stateOf(readBack, 'Text') } : null };
+    const net = String(params.netName ?? ''), x = num(params.x, NaN), y = num(params.y, NaN);
+    if (!net || !Number.isFinite(x) || !Number.isFinite(y)) throw invalid('netName, x and y are required', 'Place the label on a wire end.');
+    const wire = (await allWires()).find((w) => w.points.some((p) => Math.abs(p.x - x) <= 1 && Math.abs(p.y - y) <= 1));
+    if (!wire) throw invalid(`no wire endpoint at (${x}, ${y})`, 'Draw a wire first (easyeda_schematic_add_wire, which also takes netName) or use easyeda_schematic_connect_pin_to_net.');
+    await callFirst(['SCH_PrimitiveWire.modify', 'sch_PrimitiveWire.modify'], wire.primitiveId, { net });
+    const actual = await wireNet(wire.primitiveId);
+    return { primitiveId: wire.primitiveId, netName: net, verified: actual === net, expected: { net }, actual: { net: actual } };
   }
 
   async function schematicRenameNet(params: Params): Promise<unknown> {
     const from = String(params.from ?? ''), to = String(params.to ?? '');
     if (!from || !to) throw invalid('from and to are required', 'Net names are case-sensitive.');
-    const attrs = (await callFirst(['SCH_PrimitiveAttribute.getAll', 'sch_PrimitiveAttribute.getAll'])) as any[];
-    const labels = (Array.isArray(attrs) ? attrs : []).filter((a) => /net/i.test(String(stateOf(a, 'Key') ?? stateOf(a, 'Name') ?? '')) && String(stateOf(a, 'Value') ?? stateOf(a, 'Text') ?? '') === from);
-    const ids = labels.map((a) => String(stateOf(a, 'PrimitiveId') ?? ''));
-    for (const id of ids) await callFirst(['SCH_PrimitiveAttribute.modify', 'sch_PrimitiveAttribute.modify'], id, { value: to });
+    // SCH_PrimitiveAttribute.getAll returns [] on 3.2.x; wire Net carries the label.
+    const ids = (await allWires()).filter((w) => w.net === from).map((w) => w.primitiveId);
+    if (ids.length === 0) throw invalid(`no wire carries net "${from}"`, 'Power/ground flags are symbols, not wire labels; replace them instead.');
+    for (const id of ids) await callFirst(['SCH_PrimitiveWire.modify', 'sch_PrimitiveWire.modify'], id, { net: to });
     let renamed = 0;
-    for (const id of ids) {
-      const a = await callFirst(['SCH_PrimitiveAttribute.get', 'sch_PrimitiveAttribute.get'], id);
-      if (String(stateOf(a, 'Value') ?? stateOf(a, 'Text') ?? '') === to) renamed += 1;
-    }
-    return { from, to, labelIds: ids, verified: ids.length > 0 && renamed === ids.length, expected: { renamed: ids.length }, actual: { renamed } };
+    for (const id of ids) if ((await wireNet(id)) === to) renamed += 1;
+    return { from, to, labelIds: ids, verified: renamed === ids.length, expected: { renamed: ids.length }, actual: { renamed } };
   }
 
   async function schematicComponentReplace(params: Params): Promise<unknown> {

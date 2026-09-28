@@ -1051,7 +1051,7 @@ function registerPcbWriteTools(
       destructiveHint: false,
     },
     inputSchema: z.object({
-      layer: z.number().int().describe('Layer id, e.g. 3 = Top Silkscreen, 4 = Bottom Silkscreen'),
+      layer: z.number().int().describe('Layer id, e.g. 3 = Top Silkscreen, 4 = Bottom Silkscreen, 11 = Board Outline (draw a closed loop to define the board)'),
       startX: z.number(),
       startY: z.number(),
       endX: z.number(),

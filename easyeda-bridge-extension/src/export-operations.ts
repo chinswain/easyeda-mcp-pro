@@ -33,9 +33,10 @@ export function createExportOperations({
   }
 
   async function exportGerbers(params: Record<string, unknown>): Promise<unknown> {
-    const projectId = requireProjectId(params, 'Gerber export');
+    requireProjectId(params, 'Gerber export');
+    // First native argument is the output file name, not the project; undefined lets EasyEDA name it.
     return normalizeBinaryResult(
-      await callFirst(['PCB_ManufactureData.getGerberFile'], projectId),
+      await callFirst(['PCB_ManufactureData.getGerberFile'], params.fileName),
       'gerbers.zip',
     );
   }
@@ -51,9 +52,9 @@ export function createExportOperations({
   }
 
   async function exportPickPlace(params: Record<string, unknown>): Promise<unknown> {
-    const projectId = requireProjectId(params, 'Pick-and-place export');
+    requireProjectId(params, 'Pick-and-place export');
     return normalizeBinaryResult(
-      await callFirst(['PCB_ManufactureData.getPickAndPlaceFile'], projectId),
+      await callFirst(['PCB_ManufactureData.getPickAndPlaceFile'], params.fileName),
       `pick-place.${typeof params.format === 'string' ? params.format : 'csv'}`,
     );
   }

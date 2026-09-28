@@ -15,8 +15,8 @@ export const CURRENT_PROJECT = 'current';
 
 // Semantic synonyms. Case/underscore variants (pin_number → pinNumber) need no entry.
 const SYNONYMS: Record<string, string[]> = {
-  reference: ['designator', 'ref', 'refdes'],
-  designator: ['reference', 'ref', 'refdes'],
+  reference: ['designator', 'ref', 'refdes', 'references', 'designators'],
+  designator: ['reference', 'ref', 'refdes', 'references', 'designators'],
   references: ['designators', 'refs', 'reference', 'designator', 'ref'],
   designators: ['references', 'refs', 'designator', 'reference', 'ref'],
   primitiveIds: ['primitiveId', 'ids', 'id'],
@@ -82,6 +82,7 @@ function coerce(value: unknown, schema: z.ZodType): unknown {
   const t = def.type;
   if (typeof value === 'string') return coerceString(value, schema, target, t);
   if (t === 'string' && typeof value === 'number') return String(value);
+  if (t === 'string' && Array.isArray(value) && value.length === 1) return coerce(value[0], schema);
   if (t === 'object') return coerceObject(value, def.shape ?? {});
   if (t !== 'array' || value === undefined || value === null) return value;
   if (!Array.isArray(value)) return typeof value === 'object' ? value : [value];
