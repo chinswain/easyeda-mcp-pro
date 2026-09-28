@@ -276,7 +276,7 @@ describe('schematic transaction operations', () => {
     });
   });
 
-  it('rejects text rollback when an addressable text has no public alignment', async () => {
+  it('snapshots text without alignMode when none is exposed', async () => {
     const sameId = { primitiveId: 'text-1', content: 'hello' };
     const { operations } = createSubject({
       SCH_PrimitiveText: {
@@ -285,10 +285,9 @@ describe('schematic transaction operations', () => {
       },
     });
 
-    await expect(operations.getPrimitiveSnapshot('text-1', 'text')).rejects.toMatchObject({
-      code: 'UNSUPPORTED_RUNTIME',
-      message: 'Text text-1 did not expose a public alignMode',
-    });
+    const snapshot = await operations.getPrimitiveSnapshot('text-1', 'text');
+    expect(snapshot).toMatchObject({ primitiveKind: 'text', property: { content: 'hello' } });
+    expect(snapshot?.property).not.toHaveProperty('alignMode');
   });
 
   it('contains text read failures and ignores unrelated wrappers', async () => {
@@ -986,20 +985,20 @@ describe('schematic transaction operations', () => {
     );
   });
 
-  it('rejects text modification when neither public nor cached alignment is available', async () => {
+  it('modifies text with unknown alignment and never passes alignMode to native modify', async () => {
     const sameId = { primitiveId: 'text-1', content: 'hello' };
+    const modify = vi.fn().mockResolvedValue({});
     const { operations } = createSubject({
       SCH_PrimitiveText: {
         getAll: vi.fn().mockResolvedValue([sameId]),
         get: vi.fn().mockResolvedValue(sameId),
-        modify: vi.fn(),
+        modify,
       },
     });
 
-    await expect(operations.modifyPrimitive('text-1', { content: 'new' })).rejects.toMatchObject({
-      code: 'UNSUPPORTED_RUNTIME',
-      message: 'Text text-1 did not expose a public alignMode',
-    });
+    await operations.modifyPrimitive('text-1', { content: 'new' });
+    expect(modify.mock.calls[0][1]).toMatchObject({ content: 'new' });
+    expect(modify.mock.calls[0][1]).not.toHaveProperty('alignMode');
   });
 
   it('normalizes text aliases and uses cached alignment when public get is lossy', async () => {
@@ -1025,13 +1024,12 @@ describe('schematic transaction operations', () => {
         content: 'new',
         textColor: '#fff',
         underLine: true,
-        alignMode: 3,
       }),
     );
-    expect(textAlignCache.get('text-1')).toBe(8);
+    expect(modify.mock.calls[0][1]).not.toHaveProperty('alignMode');
   });
 
-  it('uses requested text alignment and preserves it when modify returns no public alignment', async () => {
+  it('drops an unchanged text alignMode and refuses a changed one', async () => {
     const persistent = { primitiveId: 'text-1', content: 'old', color: '#000' };
     const modify = vi.fn().mockResolvedValue({});
     const { operations, textAlignCache } = createSubject({
@@ -1041,9 +1039,14 @@ describe('schematic transaction operations', () => {
         modify,
       },
     });
+    textAlignCache.set('text-1', 6);
 
     await operations.modifyPrimitive('text-1', { content: 'new', alignMode: 6 });
-    expect(textAlignCache.get('text-1')).toBe(6);
+    expect(modify.mock.calls[0][1]).not.toHaveProperty('alignMode');
+    await expect(operations.modifyPrimitive('text-1', { alignMode: 3 })).rejects.toMatchObject({
+      code: 'UNSUPPORTED_RUNTIME',
+    });
+    expect(modify).toHaveBeenCalledTimes(1);
   });
   it('reads text through persistent inventory only when cached alignment is known', async () => {
     const persistent = { primitiveId: 'text-1', x: 1, y: 2, content: 'cached' };
@@ -1125,7 +1128,7 @@ describe('schematic transaction operations', () => {
     });
   });
 
-  it('throws the text alignment error after all unconstrained shape fallbacks miss', async () => {
+  it('returns a text snapshot without alignMode from the unconstrained lookup', async () => {
     const sameId = { primitiveId: 'text-1', content: 'hello' };
     const { operations } = createSubject({
       SCH_PrimitiveText: {
@@ -1133,8 +1136,8 @@ describe('schematic transaction operations', () => {
         get: vi.fn().mockResolvedValue(sameId),
       },
     });
-    await expect(operations.getPrimitiveSnapshot('text-1')).rejects.toMatchObject({
-      code: 'UNSUPPORTED_RUNTIME',
+    await expect(operations.getPrimitiveSnapshot('text-1')).resolves.toMatchObject({
+      primitiveKind: 'text',
     });
   });
 

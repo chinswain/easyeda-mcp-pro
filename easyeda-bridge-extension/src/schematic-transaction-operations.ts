@@ -397,7 +397,7 @@ export function createSchematicTransactionOperations(
   function textSnapshot(
     primitiveId: string,
     text: TextPrimitiveRead,
-    alignMode: PublicTextAlignMode,
+    alignMode: PublicTextAlignMode | undefined,
   ): SchematicPrimitiveSnapshot {
     return {
       schemaVersion: 'schematic-primitive-snapshot/v1',
@@ -495,19 +495,16 @@ export function createSchematicTransactionOperations(
   async function readTextSnapshot(primitiveId: string): Promise<TextSnapshotRead> {
     const text = await readTextPrimitiveFromClass(TEXT_CLASS_PATHS, primitiveId);
     if (!text) return { candidateFound: false };
+    // alignMode may be null on texts an earlier bridge corrupted; snapshot them without it.
+    // A wrapper with neither alignMode nor content is another primitive sharing the ID.
     const alignMode = resolvePublicTextAlignMode(text, primitiveId);
     return {
       candidateFound: true,
-      snapshot: alignMode === undefined ? undefined : textSnapshot(primitiveId, text, alignMode),
+      snapshot:
+        alignMode === undefined && readTextState(text, 'Content') === undefined
+          ? undefined
+          : textSnapshot(primitiveId, text, alignMode),
     };
-  }
-
-  function throwUnsupportedTextSnapshot(primitiveId: string): never {
-    throw newBridgeError(
-      'UNSUPPORTED_RUNTIME',
-      `Text ${primitiveId} did not expose a public alignMode`,
-      'Retry after reloading the document. Exact text rollback requires a documented ESCH_PrimitiveTextAlignMode value from 1 through 9.',
-    );
   }
 
   async function readSnapshotByKind(
@@ -522,9 +519,7 @@ export function createSchematicTransactionOperations(
       case 'wire':
         return readClassSnapshot(primitiveId, WIRE_CLASS_PATHS, wireSnapshot);
       case 'text': {
-        const text = await readTextSnapshot(primitiveId);
-        if (text.candidateFound && !text.snapshot) throwUnsupportedTextSnapshot(primitiveId);
-        return text.snapshot ?? null;
+        return (await readTextSnapshot(primitiveId)).snapshot ?? null;
       }
       case 'rectangle':
         return readClassSnapshot(primitiveId, RECTANGLE_CLASS_PATHS, rectangleSnapshot);
@@ -555,7 +550,6 @@ export function createSchematicTransactionOperations(
     if (circle) return circle;
     const polygon = await readClassSnapshot(primitiveId, POLYGON_CLASS_PATHS, polygonSnapshot);
     if (polygon) return polygon;
-    if (text.candidateFound) throwUnsupportedTextSnapshot(primitiveId);
     return null;
   }
 
@@ -976,14 +970,12 @@ export function createSchematicTransactionOperations(
   function textModificationProperties(
     text: TextPrimitiveRead,
     property: Record<string, unknown>,
-    alignMode: PublicTextAlignMode,
   ): Record<string, unknown> {
     const incoming: Record<string, unknown> = { ...property };
     if (incoming.color !== undefined) incoming.textColor = incoming.color;
     if (incoming.underline !== undefined) incoming.underLine = incoming.underline;
     delete incoming.color;
     delete incoming.underline;
-    incoming.alignMode = alignMode;
 
     return {
       x: readTextState(text, 'X'),
@@ -1010,26 +1002,22 @@ export function createSchematicTransactionOperations(
     const text = await readTextPrimitiveFromClass(TEXT_CLASS_PATHS, primitiveId);
     if (!text) return NOT_HANDLED;
 
-    let requestedAlignMode: PublicTextAlignMode | undefined;
-    if (Object.prototype.hasOwnProperty.call(property, 'alignMode')) {
-      requestedAlignMode = requirePublicTextAlignMode(property.alignMode);
-    }
-    const alignMode = requestedAlignMode ?? resolvePublicTextAlignMode(text, primitiveId);
-    if (alignMode === undefined) {
+    // Native modify scrambles any alignMode it is given (1->5, 2->9, others->null, not even
+    // deterministic; verified live) but keeps it when omitted. An unchanged alignMode (rollback
+    // snapshots) is dropped; a real change is refused.
+    const { alignMode: requestedAlignMode, ...rest } = property;
+    if (
+      requestedAlignMode !== undefined &&
+      requirePublicTextAlignMode(requestedAlignMode) !== resolvePublicTextAlignMode(text, primitiveId)
+    ) {
       throw newBridgeError(
         'UNSUPPORTED_RUNTIME',
-        `Text ${primitiveId} did not expose a public alignMode`,
-        'Read the text after reloading the document, or provide alignMode explicitly using a value from 1 through 9.',
+        `Text ${primitiveId} alignMode cannot be changed in place: EasyEDA modify corrupts it`,
+        'Delete the text and create a new one with the wanted alignMode.',
       );
     }
 
-    const result = await primitiveClass.modify(
-      primitiveId,
-      textModificationProperties(text, property, alignMode),
-    );
-    const resultAlignMode = asPublicTextAlignMode(safeGetState(result, 'AlignMode'));
-    dependencies.setCachedTextAlignMode(primitiveId, resultAlignMode ?? alignMode);
-    return handled(result);
+    return handled(await primitiveClass.modify(primitiveId, textModificationProperties(text, rest)));
   }
 
   async function tryModifyCircle(

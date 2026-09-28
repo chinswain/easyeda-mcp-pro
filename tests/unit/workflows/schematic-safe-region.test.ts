@@ -25,6 +25,13 @@ describe('schematic safe-region planner', () => {
     expect(sheet).toMatchObject({ width: 1600, height: 1000, unit: 'coord', source: 'sheet-info' });
   });
 
+  it('reads page size from the title-block frame symbol when Size is absent', () => {
+    const sheet = inferSchematicSheetGeometry({
+      currentPage: { titleBlockData: { Symbol: { value: 'Drawing-Symbol_A3' } } },
+    });
+    expect(sheet).toMatchObject({ width: 1682, height: 1189, source: 'sheet-info' });
+  });
+
   it('places upper-left content at high Y, not near the lower title block', () => {
     const plan = planSafeSchematicRegion({
       contentWidth: 360,

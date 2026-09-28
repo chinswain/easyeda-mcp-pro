@@ -74,7 +74,9 @@ export function createSchematicSnapshotRecreator(
           property.bold ?? false,
           property.italic ?? false,
           property.underline ?? false,
-          requirePublicTextAlignMode(property.alignMode, 'snapshot.property.alignMode'),
+          property.alignMode === undefined
+            ? undefined
+            : requirePublicTextAlignMode(property.alignMode, 'snapshot.property.alignMode'),
         );
       }
       case 'rectangle': {

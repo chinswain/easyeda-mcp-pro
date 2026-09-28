@@ -3013,12 +3013,12 @@ describe('createDispatcher', () => {
           content: 'NEW TITLE',
           textColor: '#FF0000',
           underLine: true,
-          alignMode: 3,
           fontName: 'Arial',
           fontSize: 20,
         }),
       );
       const nativeProperty = textModify.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(nativeProperty).not.toHaveProperty('alignMode');
       expect(nativeProperty).not.toHaveProperty('color');
       expect(nativeProperty).not.toHaveProperty('underline');
     });
