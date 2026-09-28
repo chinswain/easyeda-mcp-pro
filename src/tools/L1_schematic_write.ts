@@ -449,6 +449,11 @@ const setPinNoConnectInputSchema = z.object({
   projectId: z.string().min(1).describe('The project/schematic ID'),
   primitiveId: z.string().min(1).describe('The component primitive ID'),
   pinNumber: z.string().min(1).describe('The exact component pin number'),
+  pinPrimitiveId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Pin primitive ID; required when several pins share pinNumber (PIN_AMBIGUOUS lists candidates)'),
   noConnected: z
     .boolean()
     .default(true)
@@ -1186,6 +1191,7 @@ function registerSchematicWriteTools(
           projectId: p.projectId,
           primitiveId: p.primitiveId,
           pinNumber: p.pinNumber,
+          pinPrimitiveId: p.pinPrimitiveId,
           noConnected: p.noConnected,
         })) as {
           componentPrimitiveId?: string;

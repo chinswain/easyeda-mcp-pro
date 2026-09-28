@@ -143,6 +143,11 @@ const setPinNoConnectOperationSchema = z.object({
   action: z.literal('setPinNoConnect'),
   primitiveId: z.string().min(1),
   pinNumber: z.string().min(1),
+  pinPrimitiveId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Pin primitive ID; required when several pins share pinNumber (PIN_AMBIGUOUS lists candidates)'),
   noConnected: z.boolean().default(true),
 });
 const deleteOperationSchema = z.object({
@@ -183,7 +188,7 @@ const batchInputSchema = z
       if (operation.action !== 'create') {
         const targetId =
           operation.action === 'setPinNoConnect'
-            ? `${operation.primitiveId}#pin:${operation.pinNumber}`
+            ? `${operation.primitiveId}#pin:${operation.pinPrimitiveId ?? operation.pinNumber}`
             : operation.primitiveId;
         if (targetIds.has(targetId)) {
           context.addIssue({
@@ -393,11 +398,13 @@ async function getPinNoConnectSnapshot(
   projectId: string,
   primitiveId: string,
   pinNumber: string,
+  pinPrimitiveId?: string,
 ): Promise<PinNoConnectSnapshot> {
   const state = (await context.bridge.call('schematic.getPinNoConnect', {
     projectId,
     primitiveId,
     pinNumber,
+    pinPrimitiveId,
   })) as PinNoConnectBridgeState;
   if (!state.pinPrimitiveId || typeof state.noConnected !== 'boolean') {
     throw new Error('Pin no-connect readback did not return an addressable pin and boolean state');
@@ -423,15 +430,18 @@ async function executeSetPinNoConnect(
     projectId,
     operation.primitiveId,
     operation.pinNumber,
+    operation.pinPrimitiveId,
   );
-  return getGlobalTransactionManager().runModify(transactionId, initial.pinPrimitiveId, {
+  const pinPrimitiveId = initial.pinPrimitiveId;
+  return getGlobalTransactionManager().runModify(transactionId, pinPrimitiveId, {
     getSnapshot: async () =>
-      getPinNoConnectSnapshot(context, projectId, operation.primitiveId, operation.pinNumber),
+      getPinNoConnectSnapshot(context, projectId, operation.primitiveId, operation.pinNumber, pinPrimitiveId),
     apply: async () =>
       context.bridge.call('schematic.setPinNoConnect', {
         projectId,
         primitiveId: operation.primitiveId,
         pinNumber: operation.pinNumber,
+        pinPrimitiveId,
         noConnected: operation.noConnected,
       }),
     restore: async (snapshot) => {
@@ -440,6 +450,7 @@ async function executeSetPinNoConnect(
         projectId: previous.projectId,
         primitiveId: previous.componentPrimitiveId,
         pinNumber: previous.pinNumber,
+        pinPrimitiveId: previous.pinPrimitiveId,
         noConnected: previous.noConnected,
       });
     },

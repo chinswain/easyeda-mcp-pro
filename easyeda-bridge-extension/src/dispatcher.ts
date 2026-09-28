@@ -1190,6 +1190,7 @@ function readPinNoConnected(pin: unknown): boolean {
 async function resolvePinNoConnectState(
   componentPrimitiveId: string,
   pinNumber: string,
+  pinPrimitiveIdFilter?: string,
 ): Promise<PinNoConnectState> {
   const pins = await callFirst(
     [
@@ -1198,8 +1199,13 @@ async function resolvePinNoConnectState(
     ],
     componentPrimitiveId,
   );
-  const matches = (Array.isArray(pins) ? pins : []).filter(
-    (pin) => readPinNumber(pin) === String(pinNumber),
+  const pinIdOf = (pin: unknown) =>
+    extractPrimitiveId(pin) || nativeScalarString(safeGetState(pin, 'PrimitiveId'));
+  // pinPrimitiveId disambiguates pins that share a number (e.g. connector mounting tabs all numbered "0").
+  const matches = (Array.isArray(pins) ? pins : []).filter((pin) =>
+    pinPrimitiveIdFilter
+      ? pinIdOf(pin) === pinPrimitiveIdFilter
+      : readPinNumber(pin) === String(pinNumber),
   );
   if (matches.length === 0) {
     throw newBridgeError(
@@ -1213,13 +1219,17 @@ async function resolvePinNoConnectState(
     throw newBridgeError(
       'PIN_AMBIGUOUS',
       `Pin number "${pinNumber}" matched ${matches.length} pins on component "${componentPrimitiveId}"`,
-      'Use a component whose pin numbers are unique before applying a no-connect marker.',
-      { componentPrimitiveId, pinNumber, matchCount: matches.length },
+      'Retry with pinPrimitiveId set to one of candidatePinPrimitiveIds.',
+      {
+        componentPrimitiveId,
+        pinNumber,
+        matchCount: matches.length,
+        candidatePinPrimitiveIds: matches.map(pinIdOf),
+      },
     );
   }
   const pin = matches[0];
-  const pinPrimitiveId =
-    extractPrimitiveId(pin) || nativeScalarString(safeGetState(pin, 'PrimitiveId'));
+  const pinPrimitiveId = pinIdOf(pin);
   if (!pinPrimitiveId) {
     throw newBridgeError(
       'PIN_PRIMITIVE_ID_UNAVAILABLE',
@@ -1252,8 +1262,9 @@ async function setPinNoConnectState(
   componentPrimitiveId: string,
   pinNumber: string,
   noConnected: boolean,
+  pinPrimitiveId?: string,
 ) {
-  const before = await resolvePinNoConnectState(componentPrimitiveId, pinNumber);
+  const before = await resolvePinNoConnectState(componentPrimitiveId, pinNumber, pinPrimitiveId);
   if (before.noConnected === noConnected) {
     return {
       ...publicPinNoConnectState(before),
@@ -1284,7 +1295,7 @@ async function setPinNoConnectState(
     await pinClass.modify(before.pin, { noConnected });
   }
 
-  const after = await resolvePinNoConnectState(componentPrimitiveId, pinNumber);
+  const after = await resolvePinNoConnectState(componentPrimitiveId, pinNumber, pinPrimitiveId);
   if (after.noConnected !== noConnected) {
     throw newBridgeError(
       'PIN_NO_CONNECT_VERIFY_FAILED',
@@ -1494,8 +1505,11 @@ async function getNetDetailApi(netName: string, operationTimeoutMs: unknown): Pr
 async function getPinNoConnectApi(
   componentPrimitiveId: string,
   pinNumber: string,
+  pinPrimitiveId?: string,
 ): Promise<unknown> {
-  return publicPinNoConnectState(await resolvePinNoConnectState(componentPrimitiveId, pinNumber));
+  return publicPinNoConnectState(
+    await resolvePinNoConnectState(componentPrimitiveId, pinNumber, pinPrimitiveId),
+  );
 }
 
 async function dispatch(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
@@ -1675,6 +1689,7 @@ async function dispatch(method: string, params: Record<string, unknown> = {}): P
         params.primitiveId as string,
         params.pinNumber as string,
         params.noConnected !== false,
+        params.pinPrimitiveId as string | undefined,
       );
     case 'schematic.createNetFlag': {
       const nfX = params.x as number;

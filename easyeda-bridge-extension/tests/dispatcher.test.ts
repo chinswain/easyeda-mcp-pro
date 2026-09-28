@@ -278,8 +278,18 @@ describe('createDispatcher', () => {
         pinNumber: '9',
         noConnected: true,
       }),
-    ).rejects.toMatchObject({ code: 'PIN_AMBIGUOUS' });
+    ).rejects.toMatchObject({
+      code: 'PIN_AMBIGUOUS',
+      data: { candidatePinPrimitiveIds: ['pin-a', 'pin-b'] },
+    });
     expect(modify).not.toHaveBeenCalled();
+
+    const picked = (await ambiguous.dispatch('schematic.getPinNoConnect', {
+      primitiveId: 'comp-3',
+      pinNumber: '9',
+      pinPrimitiveId: 'pin-b',
+    })) as { pinPrimitiveId: string };
+    expect(picked.pinPrimitiveId).toBe('pin-b');
   });
 
   it('does not stringify object-valued native pin identifiers or names', async () => {

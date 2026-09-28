@@ -35,7 +35,11 @@ export interface ReadOnlyOperationsDependencies {
   schematicInspection: SchematicInspectionOperations;
   listNets: () => Promise<SchematicNetEntry[]>;
   getNetDetail: (netName: string, operationTimeoutMs: unknown) => Promise<unknown>;
-  getPinNoConnect: (componentPrimitiveId: string, pinNumber: string) => Promise<unknown>;
+  getPinNoConnect: (
+    componentPrimitiveId: string,
+    pinNumber: string,
+    pinPrimitiveId?: string,
+  ) => Promise<unknown>;
   findFloatingPins: () => Promise<FloatingPinResult>;
   runSchematicCheck: () => Promise<SchematicCheckResult>;
   logRecoverableError: (message: string, error: unknown) => void;
@@ -262,7 +266,9 @@ export function createReadOnlyOperations(
     },
 
     async getPinNoConnect(params) {
-      return dependencies.getPinNoConnect(params.primitiveId as string, params.pinNumber as string);
+      return dependencies.getPinNoConnect(params.primitiveId as string, params.pinNumber as string,
+        params.pinPrimitiveId as string | undefined,
+      );
     },
 
     async validateNetlist(params = {}) {
