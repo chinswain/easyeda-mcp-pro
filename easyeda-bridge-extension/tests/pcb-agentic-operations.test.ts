@@ -132,6 +132,8 @@ describe('placement', () => {
     });
     await expect(failing.operations.addKeepout({ points })).rejects.toMatchObject({ code: 'EASYEDA_API_ERROR' });
     await expect(operations.addKeepout({ points: [{ x: 0, y: 0 }] })).rejects.toThrow(/three/);
+    // No native via rule: fail instead of silently dropping it.
+    await expect(operations.addKeepout({ points, rules: ['Via'] })).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
   });
 });
 

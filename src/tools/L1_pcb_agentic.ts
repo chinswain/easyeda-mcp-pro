@@ -281,7 +281,7 @@ export function registerPcbAgenticTools(registry: ToolRegistry, _config: EnvConf
       rect_mm: z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() }).optional(),
       ring_mm: z.object({ cx: z.number(), cy: z.number(), radius: z.number().positive() }).optional(),
       layer: z.string().default('MultiLayer'),
-      rules: z.array(z.enum(['Copper', 'Wire', 'Via', 'Component'])).default(['Component']),
+      rules: z.array(z.enum(['Copper', 'Wire', 'Component'])).default(['Component']),
       max_height_mm: z.number().positive().optional().describe('When set, parts of any height are allowed but taller ones violate.'),
     },
     output: { keepout: keepoutSchema.optional(), signature: z.string().optional() },

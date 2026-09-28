@@ -289,10 +289,14 @@ export function createPcbAgenticOperations({
   async function addKeepout(params: Params): Promise<unknown> {
     const poly = flatPolygon(params.points);
     const layer = num(params.layer, 12);
-    const rules = Array.isArray(params.rules) && params.rules.length ? params.rules : ['Copper', 'Wire', 'Via', 'Component'];
+    const rules = Array.isArray(params.rules) && params.rules.length ? params.rules : ['Copper', 'Wire', 'Component'];
     // EPCB_PrimitiveRegionRuleType values (the enum is not exposed at runtime; create() rejects a missing rule list):
-    // 2 no components, 3 no vias, 5 no wires, 6 no fills, 7 no pours.
-    const ruleCodes: Record<string, number[]> = { Component: [2], Via: [3], Wire: [5], Copper: [6, 7] };
+    // 2 no components, 5 no wires, 6 no fills, 7 no pours. There is no via rule; unknown codes are silently dropped.
+    const ruleCodes: Record<string, number[]> = { Component: [2], Wire: [5], Copper: [6, 7] };
+    const unsupported = (rules as string[]).filter((r) => !ruleCodes[r]);
+    if (unsupported.length) {
+      throw invalid(`unsupported keep-out rule(s): ${unsupported.join(', ')}`, 'EasyEDA regions support Component, Wire and Copper only (no via rule).');
+    }
     const nativeRules = [...new Set((rules as string[]).flatMap((r) => ruleCodes[r] ?? []))];
     const created = await createWithPolygon('Keep-out region', poly, (polygon) =>
       callFirst(['PCB_PrimitiveRegion.create', 'pcb_PrimitiveRegion.create'], layer, polygon, nativeRules),
