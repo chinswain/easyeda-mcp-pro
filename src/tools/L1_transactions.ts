@@ -336,12 +336,22 @@ export function registerTransactionTools(
     },
   });
 
+  const rollbackInputSchema = z.object({
+    transactionId: z.string().min(1),
+    abandon: z
+      .boolean()
+      .default(false)
+      .describe('Release the lock of a failed rollback without retrying it; unresolved writes stay'),
+    confirmWrite: z.literal(true),
+  });
+
   registry.register({
     name: 'easyeda_project_rollback_transaction',
     title: 'Rollback project transaction',
     description:
       'Controlled write: restore applied schematic primitive snapshots in reverse order, verify each ' +
-      'restored hash, and report partial rollback explicitly instead of hiding inconsistencies.',
+      'restored hash, and report partial rollback explicitly instead of hiding inconsistencies. ' +
+      'abandon=true releases the lock of a failed rollback; its unresolved writes stay.',
     profile: 'core',
     evidence: ['runtime-probe', 'inferred'],
     risk: 'medium',
@@ -349,16 +359,21 @@ export function registerTransactionTools(
     group: 'project',
     version: '1.0.0',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
-    inputSchema: z.object({
-      transactionId: z.string().min(1),
-      confirmWrite: z.literal(true),
-    }),
+    inputSchema: rollbackInputSchema,
     outputSchema: transactionResultSchema,
     handler: async (ctx: ToolContext, input: unknown) => {
-      const { transactionId } = z
-        .object({ transactionId: z.string().min(1), confirmWrite: z.literal(true) })
-        .parse(input);
+      const { transactionId, abandon } = rollbackInputSchema.parse(input);
       try {
+        if (abandon) {
+          const abandoned = getGlobalTransactionManager().abandon(transactionId);
+          return {
+            success: true,
+            transaction: publicTransaction(abandoned),
+            failed_operation_ids: abandoned.operations
+              .filter((operation) => operation.state === 'failed' || operation.state === 'applied')
+              .map((operation) => operation.id),
+          };
+        }
         const result = await rollbackEasyedaTransaction(
           getGlobalTransactionManager(),
           transactionId,

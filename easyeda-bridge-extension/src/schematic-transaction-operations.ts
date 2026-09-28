@@ -955,16 +955,35 @@ export function createSchematicTransactionOperations(
     const current = await readModificationCurrent(primitiveClass, primitiveId, 'SCH_PrimitiveWire');
     if (!current) return NOT_HANDLED;
 
-    return handled(
-      await primitiveClass.modify(primitiveId, {
-        line: safeGetState(current, 'Line'),
-        net: safeGetState(current, 'Net'),
-        color: safeGetState(current, 'Color'),
-        lineWidth: safeGetState(current, 'LineWidth'),
-        lineType: safeGetState(current, 'LineType'),
-        ...property,
-      }),
-    );
+    const result = await primitiveClass.modify(primitiveId, {
+      line: safeGetState(current, 'Line'),
+      net: safeGetState(current, 'Net'),
+      color: safeGetState(current, 'Color'),
+      lineWidth: safeGetState(current, 'LineWidth'),
+      lineType: safeGetState(current, 'LineType'),
+      ...property,
+    });
+    if (property.line !== undefined) {
+      // EasyEDA can report success on a multi-segment wire and keep the old line.
+      const kept = wirePoints(safeGetState(await primitiveClass.get(primitiveId), 'Line'));
+      if (kept !== wirePoints(property.line)) {
+        throw new Error(
+          `Wire ${primitiveId} line change did not take; EasyEDA kept ${kept}. Delete the wire and draw the new path.`,
+        );
+      }
+    }
+    return handled(result);
+  }
+
+  /** Flatten a Line state (flat, pairs or per-segment arrays) to a point string without repeats. */
+  function wirePoints(line: unknown): string {
+    const nums = Array.isArray(line) ? (line.flat(Infinity) as unknown[]).map(Number) : [];
+    const points: string[] = [];
+    for (let i = 0; i + 1 < nums.length; i += 2) {
+      const point = `${nums[i]},${nums[i + 1]}`;
+      if (points[points.length - 1] !== point) points.push(point);
+    }
+    return points.join(' ');
   }
 
   function textModificationProperties(

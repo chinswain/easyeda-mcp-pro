@@ -109,6 +109,32 @@ describe('easyeda_schematic_batch_write', () => {
     });
   });
 
+  it('defaults a missing operationId to op<N> and rejects a clash with it', async () => {
+    const tool = registry.get('easyeda_schematic_batch_write');
+    const del = (primitiveId: string, operationId?: string) => ({
+      ...(operationId ? { operationId } : {}),
+      action: 'delete',
+      primitiveId,
+    });
+    bridgeCall.mockResolvedValue({ primitiveKind: 'text' });
+    const result = (await tool?.handler(context, {
+      projectId: 'project-1',
+      operations: [del('t1'), del('t2', 'mine')],
+      dryRun: true,
+      confirmWrite: true,
+    })) as { results: Array<{ operation_id: string }> };
+    expect(result.results.map((r) => r.operation_id)).toEqual(['op1', 'mine']);
+
+    await expect(
+      tool?.handler(context, {
+        projectId: 'project-1',
+        operations: [del('t1'), del('t2', 'op1')],
+        dryRun: true,
+        confirmWrite: true,
+      }),
+    ).rejects.toThrow('Duplicate operationId: op1');
+  });
+
   it('plans a pin no-connect mutation without issuing a write', async () => {
     const result = await registry.get('easyeda_schematic_batch_write')?.handler(context, {
       projectId: 'project-1',

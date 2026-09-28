@@ -1,5 +1,6 @@
 import { type ToolContext } from '../tools/types.js';
 import { gatherLivePrimitiveBounds } from './live-primitive-bounds.js';
+import { listPrimitiveIds } from '../transactions/index.js';
 import { buildEngineSheetGeometry } from './live-functional-layout.js';
 import {
   checkPlacement,
@@ -63,6 +64,23 @@ export async function gatherLivePlacementCheck(
       ownerId: item.id,
       bounds: item.combinedBounds as SchematicBounds,
     }));
+  // Free text is not a component, so the component bounds above miss it.
+  const textIds = (await listPrimitiveIds(ctx.bridge, 'text')).filter((id) => !excluded.has(id));
+  if (textIds.length > 0) {
+    const text = await ctx.bridge.call<
+      { primitiveIds: string[] },
+      { items?: Array<{ primitiveId: string; bounds: Record<'minX' | 'maxX' | 'minY' | 'maxY', number> | null }> }
+    >('schematic.primitiveBounds', { primitiveIds: textIds });
+    for (const { primitiveId, bounds: b } of text?.items ?? []) {
+      if (!b) continue;
+      occupiedRegions.push({
+        id: `existing:${primitiveId}`,
+        kind: 'existing-object',
+        ownerId: primitiveId,
+        bounds: { x: b.minX, y: b.minY, width: b.maxX - b.minX, height: b.maxY - b.minY },
+      });
+    }
+  }
 
   const rotation = candidate.rotation ?? 0;
 

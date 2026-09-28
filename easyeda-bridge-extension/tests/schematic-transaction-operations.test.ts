@@ -941,6 +941,25 @@ describe('schematic transaction operations', () => {
     });
   });
 
+  it('rejects a wire line change that EasyEDA silently ignores', async () => {
+    const { operations } = createSubject({
+      SCH_PrimitiveWire: {
+        get: vi.fn().mockResolvedValue({
+          getState_Line: () => [0, 0, 10, 0, 10, 10],
+          getState_Net: () => 'N',
+          getState_Color: () => '#000',
+          getState_LineWidth: () => 1,
+          getState_LineType: () => 0,
+        }),
+        modify: vi.fn().mockResolvedValue({ ok: true }),
+      },
+    });
+
+    await expect(
+      operations.modifyPrimitive('wire-1', { line: [0, 0, 20, 0, 20, 10] }),
+    ).rejects.toThrow('did not take');
+  });
+
   it('contains owner getter failures and reaches the generic modify fallback', async () => {
     const componentFailure = new Error('component get failed');
     const wireFailure = new Error('wire get failed');

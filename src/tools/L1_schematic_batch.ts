@@ -13,7 +13,12 @@ import {
 import { type ToolContext, type ToolDefinition } from './types.js';
 
 const pointSchema = z.object({ x: z.number().finite(), y: z.number().finite() });
-const operationIdSchema = z.string().min(1).max(120);
+const operationIdSchema = z
+  .string()
+  .min(1)
+  .max(120)
+  .optional()
+  .describe('Defaults to op<N>, the 1-based position in operations');
 const textAlignModeSchema = z.number().int().min(1).max(9);
 const deviceItemSchema = z
   .object({ libraryUuid: z.string().min(1), uuid: z.string().min(1) })
@@ -161,8 +166,11 @@ const batchOperationSchema = z.union([
   setPinNoConnectOperationSchema,
   deleteOperationSchema,
 ]);
-type BatchOperation = z.infer<typeof batchOperationSchema>;
-type CreateOperation = z.infer<typeof createOperationSchema>;
+type BatchOperation = z.infer<typeof batchOperationSchema> & { operationId: string };
+type CreateOperation = z.infer<typeof createOperationSchema> & { operationId: string };
+
+const defaultOperationId = (operationId: string | undefined, index: number) =>
+  operationId ?? `op${index + 1}`;
 
 const batchInputSchema = z
   .object({
@@ -177,14 +185,15 @@ const batchInputSchema = z
     const operationIds = new Set<string>();
     const targetIds = new Set<string>();
     for (const [index, operation] of value.operations.entries()) {
-      if (operationIds.has(operation.operationId)) {
+      const operationId = defaultOperationId(operation.operationId, index);
+      if (operationIds.has(operationId)) {
         context.addIssue({
           code: 'custom',
           path: ['operations', index, 'operationId'],
-          message: `Duplicate operationId: ${operation.operationId}`,
+          message: `Duplicate operationId: ${operationId}`,
         });
       }
-      operationIds.add(operation.operationId);
+      operationIds.add(operationId);
       if (operation.action !== 'create') {
         const targetId =
           operation.action === 'setPinNoConnect'
@@ -204,7 +213,9 @@ const batchInputSchema = z
       }
     }
   });
-type BatchInput = z.infer<typeof batchInputSchema>;
+type BatchInput = Omit<z.infer<typeof batchInputSchema>, 'operations'> & {
+  operations: BatchOperation[];
+};
 
 const batchItemResultSchema = z.object({
   operation_id: z.string(),
@@ -760,7 +771,14 @@ async function handleSchematicBatchWrite(
   context: ToolContext,
   input: unknown,
 ): Promise<BatchOutput> {
-  const parsed = batchInputSchema.parse(input);
+  const raw = batchInputSchema.parse(input);
+  const parsed: BatchInput = {
+    ...raw,
+    operations: raw.operations.map((operation, index) => ({
+      ...operation,
+      operationId: defaultOperationId(operation.operationId, index),
+    })),
+  };
   const results: BatchItemResult[] = [];
   let session: BatchSession = {
     transactionId: parsed.transactionId,
