@@ -287,10 +287,10 @@ export function createPcbAgenticOperations({
     const poly = flatPolygon(params.points);
     const layer = num(params.layer, 12);
     const rules = Array.isArray(params.rules) && params.rules.length ? params.rules : ['Copper', 'Wire', 'Via', 'Component'];
-    // Rule names map to the runtime enum; without it EasyEDA applies its default rule set.
-    const ruleEnum = (globalThis as any).EPCB_PrimitiveRegionRuleType;
-    const ruleKeys: Record<string, string[]> = { Component: ['NO_COMPONENTS'], Via: ['NO_VIAS'], Wire: ['NO_WIRES'], Copper: ['NO_FILLS', 'NO_POURS'] };
-    const nativeRules = ruleEnum ? (rules as string[]).flatMap((r) => (ruleKeys[r] ?? []).map((k) => ruleEnum[k])).filter((v) => v !== undefined) : undefined;
+    // EPCB_PrimitiveRegionRuleType values (the enum is not exposed at runtime; create() rejects a missing rule list):
+    // 2 no components, 3 no vias, 5 no wires, 6 no fills, 7 no pours.
+    const ruleCodes: Record<string, number[]> = { Component: [2], Via: [3], Wire: [5], Copper: [6, 7] };
+    const nativeRules = [...new Set((rules as string[]).flatMap((r) => ruleCodes[r] ?? []))];
     const created = await createWithPolygon('Keep-out region', poly, (polygon) =>
       callFirst(['PCB_PrimitiveRegion.create', 'pcb_PrimitiveRegion.create'], layer, polygon, nativeRules),
     );
@@ -448,7 +448,7 @@ export function createPcbAgenticOperations({
     const poly = flatPolygon(params.points);
     if (!net) throw invalid('netName is required', 'e.g. GND');
     const created = await createWithPolygon('Copper pour', poly, (polygon) =>
-      callFirst(['PCB_PrimitivePour.create', 'pcb_PrimitivePour.create'], net, layer, polygon),
+      callFirst(['PCB_PrimitivePour.create', 'pcb_PrimitivePour.create'], net, layer, polygon, 'solid', false),
     );
     const readBack = await callFirst(['PCB_PrimitivePour.get', 'pcb_PrimitivePour.get'], created.primitiveId);
     let rebuilt: unknown = null;

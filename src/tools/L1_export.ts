@@ -68,6 +68,8 @@ function writeExportPayload(
   if (typeof binary.base64 === 'string') {
     buffer = Buffer.from(binary.base64, 'base64');
     fileName = binary.fileName || defaultFileName;
+    // EasyEDA names some exports without an extension (e.g. "Pick_Place").
+    if (!path.extname(fileName)) fileName += path.extname(defaultFileName);
   } else {
     buffer = Buffer.from(JSON.stringify(data, null, 2), 'utf-8');
   }

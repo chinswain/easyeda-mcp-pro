@@ -557,7 +557,7 @@ export function registerPcbAgenticTools(registry: ToolRegistry, _config: EnvConf
       let copper_layers: number | null = null;
       try {
         const s = await call(ctx, 'board.getStackup', { projectId: p.projectId });
-        copper_layers = s.copperLayers ?? s.copper_layers ?? (Array.isArray(s.layers) ? s.layers.filter((l: Any) => /copper|signal|plane/i.test(String(l.type ?? ''))).length || null : null);
+        copper_layers = s.totalLayers ?? s.copperLayers ?? s.copper_layers ?? (Array.isArray(s.layers) ? s.layers.filter((l: Any) => /copper|signal|plane/i.test(String(l.type ?? ''))).length || null : null);
       } catch { /* stackup read is optional */ }
       const profile = p.profile ?? (copper_layers !== null && copper_layers <= 2 ? 'JLCPCB 2-layer' : 'JLCPCB 4-layer');
       const limits = MFG_PROFILES[profile];
