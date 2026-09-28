@@ -244,51 +244,6 @@ export function createSchematicTransactionOperations(
     return dependencies.getCachedTextAlignMode(primitiveId);
   }
 
-  async function applyNetFlagState(
-    current: unknown,
-    primitiveId: string,
-    property: Record<string, unknown>,
-  ): Promise<unknown> {
-    const c = current as Record<string, (arg?: unknown) => unknown>;
-    const applied: Record<string, unknown> = {};
-    const setIf = (key: string, setter: string) => {
-      const v = property[key];
-      if (v !== undefined && typeof c[setter] === 'function') {
-        c[setter](v);
-        applied[key] = v;
-      }
-    };
-    setIf('x', 'setState_X');
-    setIf('y', 'setState_Y');
-    setIf('rotation', 'setState_Rotation');
-    setIf('mirror', 'setState_Mirror');
-    setIf('net', 'setState_Net');
-    // done() on a moved power flag drops its net (the symbol text reverts to "+5V"),
-    // so always write the net back and verify it against a fresh read.
-    const net = (property.net ?? safeGetState(current, 'Net')) as string | undefined;
-    if (net && typeof c.setState_Net === 'function') c.setState_Net(net);
-    if (typeof c.done === 'function') {
-      await c.done();
-    }
-    if (net) {
-      const componentClass = readFirstPath<any>(COMPONENT_CLASS_PATHS);
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const fresh = await componentClass?.get?.(primitiveId);
-        if (!fresh || safeGetState(fresh, 'Net') === net) break;
-        if (attempt === 1 || typeof fresh.setState_Net !== 'function') {
-          throw newBridgeError(
-            'VERIFY_FAILED',
-            `Net flag ${primitiveId} lost net "${net}" after modify`,
-            'Delete the flag and recreate it with schematic.createNetFlag at the new position.',
-          );
-        }
-        fresh.setState_Net(net);
-        await fresh.done?.();
-      }
-    }
-    return { primitiveId, componentType: readComponentType(current), applied };
-  }
-
   async function readPrimitiveFromClass(
     paths: string[],
     primitiveId: string,
@@ -969,7 +924,12 @@ export function createSchematicTransactionOperations(
 
     const componentType = readComponentType(current);
     if (componentType === 'netflag' || componentType === 'netport') {
-      return handled(await applyNetFlagState(current, primitiveId, property));
+      // Native done() on a net flag/port always clears its net (verified live), so in-place edits corrupt it.
+      throw newBridgeError(
+        'UNSUPPORTED_RUNTIME',
+        `Net ${componentType === 'netflag' ? 'flag' : 'port'} ${primitiveId} cannot be modified in place: EasyEDA clears its net`,
+        'Delete it and create a new one with the wanted net/position (batch_write: delete op + create netflag/netport op).',
+      );
     }
 
     const { merged, oldX, oldY } = componentModificationProperties(current, property);

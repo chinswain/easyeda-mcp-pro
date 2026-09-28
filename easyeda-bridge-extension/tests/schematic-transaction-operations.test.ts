@@ -154,84 +154,18 @@ describe('schematic transaction operations', () => {
       }),
     ).rejects.toMatchObject({ code: 'UNSUPPORTED_RUNTIME' });
   });
-  it('mutates net flags through low-level setters and records only applied fields', async () => {
-    const setX = vi.fn();
-    const setRotation = vi.fn();
-    let net = '';
-    const setNet = vi.fn((v: string) => {
-      net = v;
-    });
-    const done = vi.fn().mockResolvedValue(undefined);
-    const current = {
-      getState_ComponentType: () => 'netflag',
-      getState_Net: () => net,
-      setState_X: setX,
-      setState_Rotation: setRotation,
-      setState_Net: setNet,
-      done,
-    };
-    const { operations } = createSubject({
-      SCH_PrimitiveComponent: { get: vi.fn().mockResolvedValue(current), modify: vi.fn() },
-    });
-
-    await expect(
-      operations.modifyPrimitive('flag-1', {
-        x: 12,
-        y: undefined,
-        rotation: 90,
-        mirror: true,
-        net: 'GND',
-      }),
-    ).resolves.toEqual({
-      primitiveId: 'flag-1',
-      componentType: 'netflag',
-      applied: { x: 12, rotation: 90, net: 'GND' },
-    });
-    expect(setX).toHaveBeenCalledWith(12);
-    expect(setRotation).toHaveBeenCalledWith(90);
-    expect(setNet).toHaveBeenCalledWith('GND');
-    expect(done).toHaveBeenCalledTimes(1);
-  });
-
-  it('restores a net flag net that done() drops on move', async () => {
-    let net = 'VBAT';
-    let drops = 1;
-    const current = {
-      getState_ComponentType: () => 'netflag',
-      getState_Net: () => net,
-      setState_X: vi.fn(),
-      setState_Net: (v: string) => {
-        net = v;
-      },
-      done: vi.fn(async () => {
-        if (drops-- > 0) net = '';
-      }),
-    };
-    const { operations } = createSubject({
-      SCH_PrimitiveComponent: { get: vi.fn().mockResolvedValue(current), modify: vi.fn() },
-    });
-
-    await operations.modifyPrimitive('flag-2', { x: 5 });
-    expect(net).toBe('VBAT');
-    expect(current.done).toHaveBeenCalledTimes(2);
-  });
-
-  it('supports net-port mutation when done and some setters are unavailable', async () => {
-    const setY = vi.fn();
-    const current = {
-      getState_ComponentType: () => 'netport',
-      setState_Y: setY,
-    };
-    const { operations } = createSubject({
-      SCH_PrimitiveComponent: { get: vi.fn().mockResolvedValue(current), modify: vi.fn() },
-    });
-
-    await expect(operations.modifyPrimitive('port-1', { y: 44, mirror: true })).resolves.toEqual({
-      primitiveId: 'port-1',
-      componentType: 'netport',
-      applied: { y: 44 },
-    });
-    expect(setY).toHaveBeenCalledWith(44);
+  it('rejects in-place net flag/port edits before touching the primitive', async () => {
+    for (const type of ['netflag', 'netport']) {
+      const current = { getState_ComponentType: () => type, setState_X: vi.fn(), done: vi.fn() };
+      const { operations } = createSubject({
+        SCH_PrimitiveComponent: { get: vi.fn().mockResolvedValue(current), modify: vi.fn() },
+      });
+      await expect(operations.modifyPrimitive('flag-1', { x: 5 })).rejects.toMatchObject({
+        code: 'UNSUPPORTED_RUNTIME',
+      });
+      expect(current.setState_X).not.toHaveBeenCalled();
+      expect(current.done).not.toHaveBeenCalled();
+    }
   });
 
   it('continues to a class alias when an earlier snapshot getter throws', async () => {
