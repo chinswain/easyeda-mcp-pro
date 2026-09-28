@@ -157,10 +157,14 @@ describe('schematic transaction operations', () => {
   it('mutates net flags through low-level setters and records only applied fields', async () => {
     const setX = vi.fn();
     const setRotation = vi.fn();
-    const setNet = vi.fn();
+    let net = '';
+    const setNet = vi.fn((v: string) => {
+      net = v;
+    });
     const done = vi.fn().mockResolvedValue(undefined);
     const current = {
       getState_ComponentType: () => 'netflag',
+      getState_Net: () => net,
       setState_X: setX,
       setState_Rotation: setRotation,
       setState_Net: setNet,
@@ -187,6 +191,29 @@ describe('schematic transaction operations', () => {
     expect(setRotation).toHaveBeenCalledWith(90);
     expect(setNet).toHaveBeenCalledWith('GND');
     expect(done).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores a net flag net that done() drops on move', async () => {
+    let net = 'VBAT';
+    let drops = 1;
+    const current = {
+      getState_ComponentType: () => 'netflag',
+      getState_Net: () => net,
+      setState_X: vi.fn(),
+      setState_Net: (v: string) => {
+        net = v;
+      },
+      done: vi.fn(async () => {
+        if (drops-- > 0) net = '';
+      }),
+    };
+    const { operations } = createSubject({
+      SCH_PrimitiveComponent: { get: vi.fn().mockResolvedValue(current), modify: vi.fn() },
+    });
+
+    await operations.modifyPrimitive('flag-2', { x: 5 });
+    expect(net).toBe('VBAT');
+    expect(current.done).toHaveBeenCalledTimes(2);
   });
 
   it('supports net-port mutation when done and some setters are unavailable', async () => {

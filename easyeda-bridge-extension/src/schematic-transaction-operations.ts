@@ -263,8 +263,28 @@ export function createSchematicTransactionOperations(
     setIf('rotation', 'setState_Rotation');
     setIf('mirror', 'setState_Mirror');
     setIf('net', 'setState_Net');
+    // done() on a moved power flag drops its net (the symbol text reverts to "+5V"),
+    // so always write the net back and verify it against a fresh read.
+    const net = (property.net ?? safeGetState(current, 'Net')) as string | undefined;
+    if (net && typeof c.setState_Net === 'function') c.setState_Net(net);
     if (typeof c.done === 'function') {
       await c.done();
+    }
+    if (net) {
+      const componentClass = readFirstPath<any>(COMPONENT_CLASS_PATHS);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const fresh = await componentClass?.get?.(primitiveId);
+        if (!fresh || safeGetState(fresh, 'Net') === net) break;
+        if (attempt === 1 || typeof fresh.setState_Net !== 'function') {
+          throw newBridgeError(
+            'VERIFY_FAILED',
+            `Net flag ${primitiveId} lost net "${net}" after modify`,
+            'Delete the flag and recreate it with schematic.createNetFlag at the new position.',
+          );
+        }
+        fresh.setState_Net(net);
+        await fresh.done?.();
+      }
     }
     return { primitiveId, componentType: readComponentType(current), applied };
   }
@@ -368,6 +388,10 @@ export function createSchematicTransactionOperations(
         rotation: safeGetState(current, 'Rotation'),
         mirror: safeGetState(current, 'Mirror'),
         net: safeGetState(current, 'Net'),
+        // Library symbol name is "<Identification>-<net>", e.g. "Power-5V", "Ground-GND".
+        identification: String(
+          (safeGetState(current, 'Component') as { name?: unknown } | undefined)?.name ?? '',
+        ).split('-')[0] || undefined,
       });
     }
     return compactDefinedRecord({

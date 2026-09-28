@@ -239,7 +239,7 @@ const batchOutputSchema = z.object({
 });
 type BatchItemResult = z.infer<typeof batchItemResultSchema>;
 
-const RECREATABLE_DELETE_KINDS = new Set(['wire', 'text', 'rectangle', 'circle', 'polygon']);
+const RECREATABLE_DELETE_KINDS = new Set(['wire', 'text', 'rectangle', 'circle', 'polygon', 'netflag']);
 
 function bridgeCreateRequest(operation: CreateOperation): { method: string; params: object } {
   const { operationId: _operationId, action: _action, primitiveKind: _kind, ...params } = operation;
