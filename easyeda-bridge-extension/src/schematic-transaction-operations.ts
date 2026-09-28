@@ -1017,7 +1017,9 @@ export function createSchematicTransactionOperations(
       );
     }
 
-    return handled(await primitiveClass.modify(primitiveId, textModificationProperties(text, rest)));
+    const modified = await primitiveClass.modify(primitiveId, textModificationProperties(text, rest));
+    // modify()'s return has Y negated (verified live); a fresh read is correct.
+    return handled((await readTextPrimitiveFromClass(TEXT_CLASS_PATHS, primitiveId)) ?? modified);
   }
 
   async function tryModifyCircle(
