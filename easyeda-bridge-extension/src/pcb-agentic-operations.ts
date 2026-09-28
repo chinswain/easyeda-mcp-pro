@@ -256,8 +256,11 @@ export function createPcbAgenticOperations({
     poly: number[],
     build: (polygon: unknown) => Promise<unknown>,
   ): Promise<{ primitiveId: string; signature: string }> {
-    // Native polygon source format: [x1, y1, 'L', x2, y2, x3, y3, ...].
-    const source = [poly[0], poly[1], 'L', ...poly.slice(2)];
+    // Native polygon source format: [x1, y1, 'L', x2, y2, x3, y3, ...]. Region/pour create() rejects
+    // open polygons, so repeat the first point at the end.
+    const n = poly.length;
+    const closed = poly[n - 2] === poly[0] && poly[n - 1] === poly[1] ? poly : [...poly, poly[0], poly[1]];
+    const source = [closed[0], closed[1], 'L', ...closed.slice(2)];
     const attempts: Array<[string, () => Promise<unknown>]> = [
       ['polygon-object', async () => {
         const polygon = await callFirst(['PCB_MathPolygon.createPolygon', 'pcb_MathPolygon.createPolygon'], source);

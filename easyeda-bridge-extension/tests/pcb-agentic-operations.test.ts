@@ -124,7 +124,7 @@ describe('placement', () => {
       primitiveId: 'r1', signature: 'plain-array', verified: true, actual: { layer: 12 },
     });
     expect(calls).toHaveLength(2);
-    expect(calls[0]).toEqual({ native: [0, 0, 'L', 10, 0, 10, 10] });
+    expect(calls[0]).toEqual({ native: [0, 0, 'L', 10, 0, 10, 10, 0, 0] }); // closed: create() rejects open polygons
 
     const failing = createSubject({
       'PCB_MathPolygon.createPolygon': () => ({}),
