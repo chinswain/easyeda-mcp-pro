@@ -372,6 +372,7 @@ function registerDiagnosticsApi(
     description:
       'Call a documented EasyEDA class method by path, e.g. SCH_PrimitiveWire.getAll. Read methods need no confirmWrite. ' +
       'modify calls are read back and fail with WRITE_NOT_PERSISTED if ignored; property bags are camelCase. ' +
+      'Pour adapters PCB_PrimitivePour.getCopperRegion and rebuildCopperRegion take one argument object with primitiveId and pcbUuid. ' +
       'Check serialization.incomplete before using geometry.',
     profile: 'full',
     evidence: ['runtime-probe', 'pro-api-types', 'official-docs'],
