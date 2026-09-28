@@ -64,6 +64,13 @@ describe('gatherLivePrimitiveBounds', () => {
     expect(result.notAvailableCount).toBe(0);
   });
 
+  it('names requested IDs that are not components instead of returning nothing', async () => {
+    bridgeCall.mockResolvedValue({ total: 1, items: [component('c1', 0, 0, 0)] });
+    await expect(
+      gatherLivePrimitiveBounds(makeCtx(bridgeCall), 'proj-1', { primitiveIds: ['c1', 'text9'] }),
+    ).rejects.toThrow('text9');
+  });
+
   it('swaps width/height correctly between a 90 and a 180 rotation', async () => {
     bridgeCall.mockImplementation(async (method: string) => {
       if (method === 'schematic.listComponents') {

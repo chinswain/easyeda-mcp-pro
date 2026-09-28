@@ -45,7 +45,7 @@ export enum NetDomain {
 export const NET_DOMAIN_PATTERNS: Record<Exclude<NetDomain, NetDomain.Other>, RegExp[]> = {
   [NetDomain.Power]: [
     /^[0-9]+V[0-9]*/, // 3V3, 5V, 12V, 1V8
-    /^V(CC|DD|EE|SS|IN|OUT|BAT|REF|PP|DRV)/i, // VCC, VDD, VIN, VOUT, VBAT
+    /^V(CC|DD|EE|SS|IN|OUT|BAT|REF|PP|DRV|SYS|BUS)/i, // VCC, VDD, VIN, VOUT, VBAT, VSYS, VBUS
     /_V(CC|DD|EE|SS|IN|OUT)\b/i, // AVCC, DVDD
     /PWR/i,
     /POWER/i,

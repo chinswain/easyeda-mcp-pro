@@ -75,11 +75,12 @@ async function extractLiveSemanticNetlist(
     } catch {
       continue; // best-effort; skip components whose pins can't be read live
     }
-    const devicePins: PinValidationMetadata[] = pins.map((p) => ({
-      pin: p.pinNumber,
-      name: p.pinName,
-      electricalType: classifyPinElectricalType(p.pinName, p.pinType) ?? 'passive',
-    }));
+    // Unclassified pins (native "Undefined") are left out so checks treat them as unknown,
+    // not passive; defaulting them to passive flagged U7/L2/ANT1 nets as passive-only.
+    const devicePins: PinValidationMetadata[] = pins.flatMap((p) => {
+      const electricalType = classifyPinElectricalType(p.pinName, p.pinType);
+      return electricalType ? [{ pin: p.pinNumber, name: p.pinName, electricalType }] : [];
+    });
     devices.push({ id: c.reference, ref: c.reference, pins: devicePins });
   }
 

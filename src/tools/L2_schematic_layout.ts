@@ -1094,8 +1094,8 @@ export function registerSchematicLayoutTools(
     description:
       'Read real rendered (sheet-space, rotation-aware) component bounding boxes from the ' +
       'live bridge, batched in one call. Origin is not a collision bound -- use ' +
-      'combinedBounds for overlap/page/title-block checks. Reference/value text is not ' +
-      'independently addressable here and reports not_available.',
+      'combinedBounds for overlap/page/title-block checks. Components only: text, wire or ' +
+      'flag IDs are rejected by name.',
     profile: 'pro',
     evidence: ['runtime-probe', 'inferred'],
     risk: 'low',

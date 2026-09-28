@@ -101,6 +101,12 @@ export async function gatherLivePrimitiveBounds(
   const selected = options.primitiveIds
     ? components.filter((c) => c.primitiveId && requested.has(c.primitiveId))
     : components;
+  const unknown = [...requested].filter((id) => !selected.some((c) => c.primitiveId === id));
+  if (unknown.length > 0) {
+    throw new Error(
+      `Not component IDs on the current page: ${unknown.join(', ')}. primitive_bounds covers components only; text, wires and flags are not supported.`,
+    );
+  }
 
   const ids = selected
     .map((c) => c.primitiveId)

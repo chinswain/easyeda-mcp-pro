@@ -272,6 +272,37 @@ describe('semantic ERC', () => {
     expect(issues[0].remediationHint).toContain('push-pull outputs');
   });
 
+  it('treats same-named pins of one device as one driver and accepts +3V3', () => {
+    const result = validateNets({
+      nets: [
+        { id: 'vin', name: 'VIN', type: 'power', nodes: [{ deviceRef: 'U2', pin: '1' }] },
+        { id: 'pwr', name: '+3V3', type: 'power', nodes: [{ deviceRef: 'U2', pin: '12' }] },
+        { id: 'gnd', name: 'GND', type: 'ground', nodes: [{ deviceRef: 'U2', pin: '2' }] },
+        {
+          id: 'sig',
+          name: 'SYS_OUT',
+          type: 'signal',
+          nodes: [
+            { deviceRef: 'U2', pin: '10' },
+            { deviceRef: 'U2', pin: '11' },
+          ],
+        },
+      ],
+      devices: [
+        {
+          id: 'U2',
+          ref: 'U2',
+          pins: [
+            { pin: '10', name: 'OUT', electricalType: 'output' },
+            { pin: '11', name: 'OUT', electricalType: 'output' },
+          ],
+        },
+      ],
+    });
+    expect(result.errors.filter((e) => e.code === NetValidationCode.NetOutputContention)).toEqual([]);
+    expect(result.warnings.filter((e) => e.netName === '3V3')).toEqual([]);
+  });
+
   it('warns on floating input nets that have no driver or pull resistor', () => {
     const result = validateNets({
       nets: [
