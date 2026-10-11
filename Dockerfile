@@ -1,6 +1,6 @@
 # ── Multi-stage Build Stage ───────────────────────────────────
 # node:24.21.0-alpine
-FROM node@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS builder
+FROM node@sha256:32fa97f3363975684b08bf4e8a68a47c7905175cc20275b50b974bbd02aba731 AS builder
 
 # Enable corepack for pnpm
 RUN corepack enable && corepack prepare pnpm@11.28.0 --activate
@@ -36,7 +36,7 @@ RUN pnpm --filter easyeda-mcp-pro deploy --legacy --prod --frozen-lockfile /prod
 
 # ── Production Runner Stage ────────────────────────────────────
 # node:24.21.0-alpine
-FROM node@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS runner
+FROM node@sha256:32fa97f3363975684b08bf4e8a68a47c7905175cc20275b50b974bbd02aba731 AS runner
 
 WORKDIR /app
 
