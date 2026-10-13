@@ -669,12 +669,12 @@ The schematic write APIs use EasyEDA Pro extension APIs that EasyEDA currently m
 
 ### L1 — Board (core)
 
-| Tool                       | Description                                     |
-| -------------------------- | ----------------------------------------------- |
-| `easyeda_board_layers`     | List PCB layers with type, color, visibility    |
-| `easyeda_board_stackup`    | Layer stackup with thickness, material          |
-| `easyeda_board_dimensions` | Board outline, shape, mounting holes            |
-| `easyeda_board_features`   | Counts of vias, tracks, zones, pads, components |
+| Tool                       | Description                                                                                                                |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `easyeda_board_layers`     | List PCB layers with type, color, visibility                                                                               |
+| `easyeda_board_stackup`    | Layer stackup: thickness, material, copper weight (oz), dielectric constant, loss tangent. `data_source` shows the origin. |
+| `easyeda_board_dimensions` | Board outline, shape, mounting holes                                                                                       |
+| `easyeda_board_features`   | Counts of vias, tracks, zones, pads, components                                                                            |
 
 ### L1 — Export (core/pro)
 

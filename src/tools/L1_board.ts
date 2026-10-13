@@ -84,7 +84,7 @@ function registerBoardTools(
     name: 'easyeda_board_stackup',
     title: 'Get board stackup',
     description:
-      'Get the PCB layer stackup including thickness, material, and dielectric constants.',
+      'Get the PCB layer stackup: per-layer thickness, material, dielectric constant, loss tangent, and copper weight (oz).',
     profile: 'core',
     evidence: ['official-docs'],
     risk: 'low',
@@ -109,10 +109,13 @@ function registerBoardTools(
           thickness_mm: z.number().nonnegative().optional(),
           material: z.string().optional(),
           dielectric_constant: z.number().nonnegative().optional(),
+          loss_tangent: z.number().nonnegative().optional(),
           copper_weight_oz: z.number().nonnegative().optional(),
         }),
       ),
-      data_source: z.enum(['physical_stackup', 'copper_layer_count_only']).optional(),
+      data_source: z
+        .enum(['physical_stackup', 'document_source', 'copper_layer_count_only'])
+        .optional(),
       not_available: z.boolean().optional(),
       error: z.string().optional(),
     }),
@@ -124,13 +127,14 @@ function registerBoardTools(
           totalLayers?: number;
           boardThicknessMm?: number;
           available?: boolean;
-          source?: 'physical_stackup' | 'copper_layer_count_only';
+          source?: 'physical_stackup' | 'document_source' | 'copper_layer_count_only';
           layers?: Array<{
             name?: string;
             type?: string;
             thicknessMm?: number;
             material?: string;
             dielectricConstant?: number;
+            lossTangent?: number;
             copperWeightOz?: number;
           }>;
         };
@@ -144,6 +148,7 @@ function registerBoardTools(
             thickness_mm: l.thicknessMm,
             material: l.material,
             dielectric_constant: l.dielectricConstant,
+            loss_tangent: l.lossTangent,
             copper_weight_oz: l.copperWeightOz,
           })),
           data_source: data.source,

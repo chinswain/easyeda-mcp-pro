@@ -1884,6 +1884,7 @@ export function createDispatcher(toolkit: DispatcherToolkit): Dispatcher {
     readFirstPath,
     getGlobal: () => toolkit.getGlobal(),
     createBridgeError: newBridgeError,
+    callFirst,
   });
   const normalizeBinaryResult = createBinaryResultNormalizer({
     getBridgeMaxPayloadSize: () => toolkit.getBridgeMaxPayloadSize(),

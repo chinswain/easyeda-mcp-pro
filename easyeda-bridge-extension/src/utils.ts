@@ -17,6 +17,7 @@ export function logRecoverableError(context: string, error: unknown): void {
 }
 
 export function safeStringify(value: unknown): string {
+  if (value instanceof Error) return `${value.name}: ${value.message}`;
   try {
     return JSON.stringify(value);
   } catch (error) {
@@ -25,9 +26,21 @@ export function safeStringify(value: unknown): string {
   }
 }
 
+// ponytail: fixed-size ring of recent log lines so Status... can surface them
+// in runtimes with no DevTools (EasyEDA Pro desktop).
+const LOG_TAIL_SIZE = 12;
+const logTail: string[] = [];
+
 export function log(message: string, data?: unknown): void {
   const suffix = data === undefined ? '' : ` ${safeStringify(data)}`;
-  console.log(`[easyeda-mcp-pro ${new Date().toISOString()}] ${message}${suffix}`);
+  const line = `[easyeda-mcp-pro ${new Date().toISOString()}] ${message}${suffix}`;
+  logTail.push(line.slice(0, 400));
+  if (logTail.length > LOG_TAIL_SIZE) logTail.shift();
+  console.log(line);
+}
+
+export function getLogTail(): string[] {
+  return [...logTail];
 }
 
 const unsafePathSegments = new Set(['__proto__', 'constructor', 'prototype']);

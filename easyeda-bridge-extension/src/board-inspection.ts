@@ -12,6 +12,8 @@ export interface BoardInspectionDependencies {
   readFirstPath: ApiRuntime['readFirstPath'];
   getGlobal: DispatcherToolkit['getGlobal'];
   createBridgeError: BridgeErrorFactory;
+  // Optional: enables the document-source stackup fallback (see readDocumentStackup).
+  callFirst?: ApiRuntime['callFirst'];
 }
 
 export interface BoardInspectionOperations {
@@ -58,7 +60,11 @@ async function readCopperLayerCount(pcbLayerClass: any): Promise<number> {
   }
 }
 
+// IPCB_PhysicalStackingConfiguration.list items use the Layer Manager export keys
+// ("Layer", "Layer Type", "Type", "Material", "Thickness", "Permittivity",
+// "Loss Tangent"); camelCase aliases are accepted for older/newer shapes.
 function selectPhysicalStackupLayers(physicalStacking: any): any[] {
+  if (Array.isArray(physicalStacking?.list)) return physicalStacking.list;
   if (Array.isArray(physicalStacking?.layers)) return physicalStacking.layers;
   if (Array.isArray(physicalStacking?.stackup)) return physicalStacking.stackup;
   return [];
@@ -68,6 +74,140 @@ function readBoardThickness(physicalStacking: any): number | undefined {
   if (typeof physicalStacking?.thicknessMm === 'number') return physicalStacking.thicknessMm;
   if (typeof physicalStacking?.thickness === 'number') return physicalStacking.thickness;
   return undefined;
+}
+
+export interface StackupLayer {
+  name: string;
+  type: string;
+  thicknessMm: number | undefined;
+  material: string;
+  dielectricConstant: number | undefined;
+  lossTangent: number | undefined;
+  copperWeightOz: number | undefined;
+}
+
+const STANDARD_1OZ_COPPER_MM = 0.035;
+
+function stackupLayerType(layerType: string, typeLabel: string): string {
+  const key = `${layerType} ${typeLabel}`.toUpperCase();
+  if (/SUBSTRATE|DIELECTRIC|CORE|PREPREG/.test(key)) return 'dielectric';
+  if (/SILK/.test(key)) return 'silkscreen';
+  if (/SOLDER_?MASK/.test(key)) return 'soldermask';
+  if (/PASTE/.test(key)) return 'paste';
+  if (/COPPER|^TOP |^BOTTOM |SIGNAL|INNER|PLANE/.test(key)) return 'copper';
+  return layerType || typeLabel || '';
+}
+
+// Copper weight: explicit "1oz" in the material label wins; otherwise derive from
+// the copper thickness (1 oz/ft2 = 35 um). Returns undefined for non-copper layers.
+function deriveCopperWeightOz(
+  type: string,
+  material: string,
+  thicknessMm: number | undefined,
+): number | undefined {
+  if (type !== 'copper') return undefined;
+  const labelled = /(\d+(?:\.\d+)?)\s*oz/i.exec(material);
+  if (labelled) return Number(labelled[1]);
+  if (typeof thicknessMm !== 'number' || !Number.isFinite(thicknessMm)) return undefined;
+  return Math.round((thicknessMm / STANDARD_1OZ_COPPER_MM) * 100) / 100;
+}
+
+function pickNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function pickString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === 'string' && value) return value;
+  }
+  return '';
+}
+
+function normalizePhysicalStackupLayer(layer: any): StackupLayer {
+  const type = stackupLayerType(
+    pickString(layer?.['Layer Type'], layer?.layerType),
+    pickString(layer?.Type, layer?.type),
+  );
+  const material = pickString(layer?.Material, layer?.material);
+  const thicknessMm = pickNumber(layer?.thicknessMm, layer?.Thickness, layer?.thickness);
+  return {
+    name: pickString(layer?.Layer, layer?.layerName, layer?.name),
+    type,
+    thicknessMm,
+    material,
+    dielectricConstant: pickNumber(
+      layer?.dielectricConstant,
+      layer?.Permittivity,
+      layer?.permittivity,
+      layer?.dielectric,
+    ),
+    lossTangent: pickNumber(layer?.lossTangent, layer?.['Loss Tangent']),
+    copperWeightOz:
+      pickNumber(layer?.copperWeightOz, layer?.copperWeight) ??
+      deriveCopperWeightOz(type, material, thicknessMm),
+  };
+}
+
+// ponytail: EasyEDA Pro 3.2.206 returns null from every PCB_Layer physical-stacking
+// getter, so fall back to the saved document source. The DOCHEAD segment holds one
+// `{"type":"LAYER",...,"id":"[\"LAYER\",361]"}||{...}|` line per layer and one
+// `LAYER_PHYS` line per stack member (thickness in mil, ordered by zIndex).
+// Drop this once getCurrentPhysicalStackingConfiguration() returns data.
+export function parseDocumentStackup(source: string): StackupLayer[] {
+  const layers = new Map<string, Record<string, unknown>>();
+  const phys = new Map<string, Record<string, unknown>>();
+  // Line shape: `{"type":"LAYER","ticket":2,"id":"[\"LAYER\",1]"}||{...}|`
+  // (the optional ticket field appears in the live document, not in .epru exports).
+  for (const rawLine of source.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line.startsWith('{"type":"LAYER')) continue;
+    const sep = line.indexOf('||');
+    if (sep < 0) continue;
+    let header: unknown;
+    let body: unknown;
+    let idTuple: unknown;
+    try {
+      header = JSON.parse(line.slice(0, sep));
+      body = JSON.parse(line.slice(sep + 2).replace(/\|$/, ''));
+      idTuple = isRecord(header) && typeof header.id === 'string' ? JSON.parse(header.id) : null;
+    } catch {
+      continue;
+    }
+    if (!isRecord(header) || !isRecord(body) || !Array.isArray(idTuple)) continue;
+    const id = String(idTuple[1]);
+    if (header.type === 'LAYER') layers.set(id, body);
+    else if (header.type === 'LAYER_PHYS') phys.set(id, body);
+  }
+  return [...phys.entries()]
+    .sort(([, a], [, b]) => (pickNumber(a.zIndex) ?? 0) - (pickNumber(b.zIndex) ?? 0))
+    .map(([id, p]) => {
+      const layer = layers.get(id) ?? {};
+      const type = stackupLayerType(pickString(layer.layerType), '');
+      const material = pickString(p.material);
+      const thicknessMil = pickNumber(p.thickness);
+      const thicknessMm =
+        thicknessMil === undefined
+          ? undefined
+          : Math.round(thicknessMil * PCB_MIL_TO_MM * 10000) / 10000;
+      return {
+        name: pickString(layer.layerName, `layer-${id}`),
+        type,
+        thicknessMm,
+        material,
+        dielectricConstant: pickNumber(p.permittivity),
+        lossTangent: pickNumber(p.lossTangent),
+        copperWeightOz: deriveCopperWeightOz(type, material, thicknessMm),
+      };
+    });
+}
+
+function sumThickness(layers: StackupLayer[]): number | undefined {
+  const values = layers.map((l) => l.thicknessMm).filter((v): v is number => v !== undefined);
+  if (values.length === 0) return undefined;
+  return Math.round(values.reduce((a, b) => a + b, 0) * 10000) / 10000;
 }
 
 interface BoundingBox {
@@ -351,6 +491,7 @@ export function createBoardInspectionOperations({
   readFirstPath,
   getGlobal,
   createBridgeError,
+  callFirst,
 }: BoardInspectionDependencies): BoardInspectionOperations {
   async function requireActivePcbContext(): Promise<void> {
     const dmtPcb = readFirstPath<any>(['DMT_Pcb', 'dmt_Pcb']);
@@ -403,6 +544,17 @@ export function createBoardInspectionOperations({
       }));
   }
 
+  async function readDocumentStackup(): Promise<StackupLayer[]> {
+    if (!callFirst) return [];
+    try {
+      const source = await callFirst(['SYS_FileManager.getDocumentSource']);
+      return typeof source === 'string' ? parseDocumentStackup(source) : [];
+    } catch (error) {
+      logRecoverableError('failed to read document-source stackup', error);
+      return [];
+    }
+  }
+
   async function getStackup(): Promise<unknown> {
     await requireActivePcbContext();
     const pcbLayerClass = readFirstPath<any>(['PCB_Layer', 'pcb_Layer']);
@@ -420,28 +572,24 @@ export function createBoardInspectionOperations({
       }
     }
 
-    const rawLayers = selectPhysicalStackupLayers(physicalStacking);
-    const layers = rawLayers.map((layer: any) => ({
-      name: layer?.name || '',
-      type: layer?.type || '',
-      thicknessMm: typeof layer?.thicknessMm === 'number' ? layer.thicknessMm : layer?.thickness,
-      material: layer?.material || '',
-      dielectricConstant:
-        typeof layer?.dielectricConstant === 'number'
-          ? layer.dielectricConstant
-          : layer?.dielectric,
-      copperWeightOz:
-        typeof layer?.copperWeightOz === 'number' ? layer.copperWeightOz : layer?.copperWeight,
-    }));
-    const boardThickness = readBoardThickness(physicalStacking);
-    const available = Boolean(physicalStacking && layers.length > 0);
+    let layers = selectPhysicalStackupLayers(physicalStacking).map(normalizePhysicalStackupLayer);
+    let source: 'physical_stackup' | 'document_source' | 'copper_layer_count_only' =
+      'physical_stackup';
+    let boardThickness = readBoardThickness(physicalStacking);
+    if (layers.length === 0) {
+      layers = await readDocumentStackup();
+      source = 'document_source';
+    }
+    const available = layers.length > 0;
+    if (!available) source = 'copper_layer_count_only';
+    if (available && boardThickness === undefined) boardThickness = sumThickness(layers);
 
     return {
       totalLayers: totalCopper,
       boardThicknessMm: boardThickness,
       layers,
       available,
-      source: available ? 'physical_stackup' : 'copper_layer_count_only',
+      source,
     };
   }
 

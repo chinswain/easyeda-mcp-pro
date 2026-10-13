@@ -32,6 +32,29 @@ function fakePoured(id: string, pourId: string) {
   };
 }
 
+type FakePrimitive = { getState_PrimitiveId: () => string };
+
+// Mimics EasyEDA 3.2.149: getAll() without a filter throws; enumeration goes
+// through getAllPrimitiveId() + get(id). `snapshots` are consumed one per
+// getAllPrimitiveId() call so read-back can change between calls.
+function fakeClass(...snapshots: FakePrimitive[][]) {
+  let call = 0;
+  const snapshot = (index: number) => snapshots[Math.min(index, snapshots.length - 1)] ?? [];
+  return {
+    getAll: vi.fn(async () => {
+      throw new TypeError("Cannot read properties of null (reading 'map')");
+    }),
+    getAllPrimitiveId: vi.fn(async () => {
+      const ids = snapshot(call).map((item) => item.getState_PrimitiveId());
+      call += 1;
+      return ids;
+    }),
+    get: vi.fn(async (id: unknown) =>
+      snapshot(Math.max(call - 1, 0)).find((item) => item.getState_PrimitiveId() === id),
+    ),
+  };
+}
+
 function createOperations(
   options: {
     pourClass?: Record<string, unknown>;
@@ -49,15 +72,8 @@ function createOperations(
   const runtime: Record<string, unknown> = {
     PCB_PrimitivePour:
       options.pourClass ??
-      ({
-        get: vi.fn(async () => undefined),
-        getAll: vi.fn(async () => []),
-      } satisfies Record<string, unknown>),
-    PCB_PrimitivePoured:
-      options.pouredClass ??
-      ({
-        getAll: vi.fn(async () => []),
-      } satisfies Record<string, unknown>),
+      (fakeClass([]) satisfies Record<string, unknown>),
+    PCB_PrimitivePoured: options.pouredClass ?? (fakeClass([]) satisfies Record<string, unknown>),
   };
   const readFirstPath = <T>(paths: readonly string[]): T | undefined =>
     (runtime[paths[0] ?? ''] ?? runtime[paths[1] ?? '']) as T | undefined;
@@ -100,18 +116,10 @@ describe('createPcbMutationOperations', () => {
     const poured2 = fakePoured('poured-2', 'pour-2');
     const pour1 = fakePour('pour-1', { net: 'GND', layer: 1, rebuildResult: poured1 });
     const pour2 = fakePour('pour-2', { net: 'GND', layer: 1, rebuildResult: poured2 });
-    const getAllPours = vi.fn(async () => [pour1.primitive, pour2.primitive]);
-    const getAllPoured = vi
-      .fn<() => Promise<unknown[]>>()
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([poured1, poured2]);
-    const { operations } = createOperations({
-      pourClass: {
-        get: vi.fn(async () => undefined),
-        getAll: getAllPours,
-      },
-      pouredClass: { getAll: getAllPoured },
-    });
+    const pour3 = fakePour('pour-3', { net: 'VCC', layer: 1 });
+    const pourClass = fakeClass([pour1.primitive, pour2.primitive, pour3.primitive]);
+    const pouredClass = fakeClass([], [poured1, poured2]);
+    const { operations } = createOperations({ pourClass, pouredClass });
 
     await expect(operations.rebuildCopper({ net: 'GND', layer: 1 })).resolves.toEqual({
       success: true,
@@ -136,22 +144,20 @@ describe('createPcbMutationOperations', () => {
         },
       ],
     });
-    expect(getAllPours).toHaveBeenCalledWith('GND', 1);
+    expect(pourClass.getAll).not.toHaveBeenCalled();
+    expect(pourClass.getAllPrimitiveId).toHaveBeenCalledOnce();
     expect(pour1.rebuildCopperRegion).toHaveBeenCalledOnce();
     expect(pour2.rebuildCopperRegion).toHaveBeenCalledOnce();
-    expect(getAllPoured).toHaveBeenCalledTimes(2);
+    expect(pour3.rebuildCopperRegion).not.toHaveBeenCalled();
+    expect(pouredClass.getAll).not.toHaveBeenCalled();
+    expect(pouredClass.getAllPrimitiveId).toHaveBeenCalledTimes(2);
   });
 
   it('resolves every requested id before writing and rejects missing ids with zero rebuilds', async () => {
     const pour1 = fakePour('pour-1', { rebuildResult: fakePoured('poured-1', 'pour-1') });
-    const get = vi.fn(async (id: unknown) => (id === 'pour-1' ? pour1.primitive : undefined));
-    const { operations } = createOperations({
-      pourClass: {
-        get,
-        getAll: vi.fn(async () => []),
-      },
-      pouredClass: { getAll: vi.fn(async () => []) },
-    });
+    const pourClass = fakeClass([pour1.primitive]);
+    const { get } = pourClass;
+    const { operations } = createOperations({ pourClass });
 
     await expect(operations.rebuildCopper({ pourIds: ['pour-1', 'missing-pour'] })).rejects.toThrow(
       'missing-pour',
@@ -162,15 +168,7 @@ describe('createPcbMutationOperations', () => {
 
   it('reports native undefined as verified no-copper rather than success', async () => {
     const pour = fakePour('pour-empty', { rebuildResult: undefined });
-    const get = vi.fn(async () => pour.primitive);
-    const getAllPoured = vi.fn(async () => []);
-    const { operations } = createOperations({
-      pourClass: {
-        get,
-        getAll: vi.fn(async () => [pour.primitive]),
-      },
-      pouredClass: { getAll: getAllPoured },
-    });
+    const { operations } = createOperations({ pourClass: fakeClass([pour.primitive]) });
 
     const result = await operations.rebuildCopper({ pourIds: ['pour-empty'] });
 
@@ -194,38 +192,29 @@ describe('createPcbMutationOperations', () => {
     expect(result.error).toContain('produced no copper');
   });
 
-  it('fails verification when native and persisted poured ids disagree', async () => {
+  it('trusts the persisted read-back when the native poured id disagrees', async () => {
     const nativePoured = fakePoured('poured-native', 'pour-1');
     const persistedPoured = fakePoured('poured-persisted', 'pour-1');
     const pour = fakePour('pour-1', { rebuildResult: nativePoured });
-    const getAllPoured = vi
-      .fn<() => Promise<unknown[]>>()
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([persistedPoured]);
     const { operations } = createOperations({
-      pourClass: {
-        get: vi.fn(async () => pour.primitive),
-        getAll: vi.fn(async () => [pour.primitive]),
-      },
-      pouredClass: { getAll: getAllPoured },
+      pourClass: fakeClass([pour.primitive]),
+      pouredClass: fakeClass([], [persistedPoured]),
     });
 
     const result = await operations.rebuildCopper({ pourIds: ['pour-1'] });
 
     expect(result).toMatchObject({
-      success: false,
-      rebuiltCount: 0,
+      success: true,
+      rebuiltCount: 1,
       results: [
         {
           pourId: 'pour-1',
           pouredId: 'poured-persisted',
-          status: 'readback-mismatch',
-          verified: false,
+          status: 'rebuilt',
+          verified: true,
         },
       ],
     });
-    expect(result.results[0]?.error).toContain('poured-native');
-    expect(result.results[0]?.error).toContain('poured-persisted');
   });
 
   it('stops after a native rebuild error and reports already-attempted work only', async () => {
@@ -233,16 +222,9 @@ describe('createPcbMutationOperations', () => {
     const pour1 = fakePour('pour-1', { rebuildResult: poured1 });
     const pour2 = fakePour('pour-2', { rebuildError: new Error('native rebuild failed') });
     const pour3 = fakePour('pour-3', { rebuildResult: fakePoured('poured-3', 'pour-3') });
-    const getAllPoured = vi
-      .fn<() => Promise<unknown[]>>()
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([poured1]);
     const { operations } = createOperations({
-      pourClass: {
-        get: vi.fn(async () => undefined),
-        getAll: vi.fn(async () => [pour1.primitive, pour2.primitive, pour3.primitive]),
-      },
-      pouredClass: { getAll: getAllPoured },
+      pourClass: fakeClass([pour1.primitive, pour2.primitive, pour3.primitive]),
+      pouredClass: fakeClass([], [poured1]),
     });
 
     const result = await operations.rebuildCopper({ net: 'GND' });

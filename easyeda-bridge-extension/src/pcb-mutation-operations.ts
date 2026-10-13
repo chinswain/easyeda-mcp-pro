@@ -238,10 +238,24 @@ async function resolvePours(
   const ids = requestedPourIds(params.pourIds);
   const net = requestedNet(params.net);
   const layer = copperLayer(params.layer);
-  const pours = ids
-    ? await resolvePoursByIds(pourClass, ids)
-    : nativeItems(await invokeNative(pourClass, 'getAll', net, layer));
+  const pours = ids ? await resolvePoursByIds(pourClass, ids) : await listAllPrimitives(pourClass);
   return selectValidatedPours(pours, net, layer);
+}
+
+// EasyEDA Pro 3.2.149 throws "Cannot read properties of null" from
+// PCB_PrimitivePour.getAll()/PCB_PrimitivePoured.getAll() when called without a
+// filter, so a full enumeration must go through getAllPrimitiveId() + get(id).
+async function listAllPrimitives(primitiveClass: unknown): Promise<unknown[]> {
+  const ids = await invokeNative(primitiveClass, 'getAllPrimitiveId');
+  if (!Array.isArray(ids)) {
+    throw new Error('getAllPrimitiveId() did not return an array.');
+  }
+  const items: unknown[] = [];
+  for (const id of ids) {
+    if (typeof id !== 'string' || id.length === 0) continue;
+    items.push(...nativeItems(await invokeNative(primitiveClass, 'get', id)));
+  }
+  return items;
 }
 
 function pouredReadbackMap(items: unknown[]): Map<string, string[]> {
@@ -333,7 +347,7 @@ function mapRebuildResults(
         status: 'readback-missing',
         verified: false,
         error:
-          'Native rebuild returned a poured result, but PCB_PrimitivePoured.getAll() did not confirm it.',
+          'Native rebuild returned a poured result, but PCB_PrimitivePoured read-back did not confirm it.',
       };
     }
     if (readbackIds.length !== 1) {
@@ -346,17 +360,10 @@ function mapRebuildResults(
       };
     }
 
-    const nativePouredId = nativeStateString(attempt.nativeResult, 'getState_PrimitiveId');
-    if (nativePouredId !== undefined && nativePouredId !== readbackIds[0]) {
-      return {
-        pourId: attempt.pourId,
-        pouredId: readbackIds[0],
-        status: 'readback-mismatch',
-        verified: false,
-        error: `Native rebuild returned poured id ${nativePouredId}, but persisted read-back reported ${readbackIds[0]}.`,
-      };
-    }
-
+    // ponytail: the id on the rebuildCopperRegion() return value is not the
+    // pour's poured copper on EasyEDA Pro 3.2.206 (it names another pour, and
+    // repeats across pours). The persisted PCB_PrimitivePoured read-back is the
+    // source of truth, so the native id is not compared.
     return {
       pourId: attempt.pourId,
       pouredId: readbackIds[0],
@@ -372,25 +379,29 @@ function requireCopperRebuildRuntime(readFirstPath: ApiRuntime['readFirstPath'])
 } {
   const pourClass = readFirstPath<unknown>(['PCB_PrimitivePour', 'pcb_PrimitivePour']);
   const pouredClass = readFirstPath<unknown>(['PCB_PrimitivePoured', 'pcb_PrimitivePoured']);
-  if (!pourClass || !nativeMethod(pourClass, 'getAll') || !nativeMethod(pourClass, 'get')) {
+  if (
+    !pourClass ||
+    !nativeMethod(pourClass, 'getAllPrimitiveId') ||
+    !nativeMethod(pourClass, 'get')
+  ) {
     throw new Error(
-      'EasyEDA runtime does not expose PCB_PrimitivePour.get()/getAll(); no copper was rebuilt.',
+      'EasyEDA runtime does not expose PCB_PrimitivePour.get()/getAllPrimitiveId(); no copper was rebuilt.',
     );
   }
-  if (!pouredClass || !nativeMethod(pouredClass, 'getAll')) {
+  if (
+    !pouredClass ||
+    !nativeMethod(pouredClass, 'getAllPrimitiveId') ||
+    !nativeMethod(pouredClass, 'get')
+  ) {
     throw new Error(
-      'EasyEDA runtime does not expose PCB_PrimitivePoured.getAll(); read-back cannot be verified, so no copper was rebuilt.',
+      'EasyEDA runtime does not expose PCB_PrimitivePoured.get()/getAllPrimitiveId(); read-back cannot be verified, so no copper was rebuilt.',
     );
   }
   return { pourClass, pouredClass };
 }
 
 async function readPouredItems(pouredClass: unknown): Promise<unknown[]> {
-  const value = await invokeNative(pouredClass, 'getAll');
-  if (!Array.isArray(value)) {
-    throw new Error('PCB_PrimitivePoured.getAll() did not return an array.');
-  }
-  return value;
+  return listAllPrimitives(pouredClass);
 }
 
 async function executeCopperRebuilds(
@@ -502,7 +513,7 @@ export function createPcbMutationOperations({
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const wrapped = new Error(
-        `PCB_PrimitivePoured.getAll() preflight failed; read-back cannot be verified, so no copper was rebuilt. ${message}`,
+        `PCB_PrimitivePoured read-back preflight failed; read-back cannot be verified, so no copper was rebuilt. ${message}`,
       ) as Error & { cause?: unknown };
       wrapped.cause = error;
       throw wrapped;

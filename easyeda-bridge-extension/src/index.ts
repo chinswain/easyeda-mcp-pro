@@ -28,7 +28,7 @@ import {
   type EasyedaTimerApi,
   type RuntimeTimerHandle,
 } from './runtime-timers.js';
-import { isRecord, log, readPath, type JsonValue } from './utils.js';
+import { getLogTail, isRecord, log, readPath, type JsonValue } from './utils.js';
 
 declare const eda: EasyedaGlobal | undefined;
 declare const EDA: unknown | undefined;
@@ -1389,6 +1389,28 @@ function showStatusInternal(): void {
   showToast(
     `MCP Bridge disconnected | ${autoLabel} — click Connect to connect${localConnectionDiagnosticSuffix()}`,
   );
+  showLogTailDialog();
+}
+
+// ponytail: desktop EasyEDA Pro has no DevTools, so Status... also shows the
+// recent extension log in a dialog when the bridge is disconnected.
+function showLogTailDialog(): void {
+  const dialog = readPath<EasyedaDialogApi>(getGlobal(), 'sys_Dialog');
+  const show = dialog?.showConfirmationMessage?.bind(dialog);
+  const tail = getLogTail();
+  if (tail.length === 0) {
+    showToast('MCP Bridge log: (empty)');
+    return;
+  }
+  if (show) {
+    try {
+      show(tail.join('\n'), 'MCP Bridge recent log', 'OK', 'Close');
+      return;
+    } catch (error) {
+      log('Log tail dialog failed', error);
+    }
+  }
+  showToast(`MCP Bridge log: ${tail.slice(-3).join(' || ')}`);
 }
 
 function scheduleReconnect(): void {

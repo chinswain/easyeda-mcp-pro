@@ -8,6 +8,7 @@ function bridgeError(code: string, message: string, suggestion: string, data?: u
 function makeOperations(
   runtime: Record<string, unknown> = {},
   globalRoot: Record<string, unknown> | null = {},
+  callFirst?: (paths: readonly string[], ...args: unknown[]) => Promise<unknown>,
 ) {
   const readFirstPath = vi.fn(<T>(paths: readonly string[]): T | undefined => {
     for (const path of paths) {
@@ -23,6 +24,7 @@ function makeOperations(
       readFirstPath,
       getGlobal,
       createBridgeError: bridgeError,
+      callFirst,
     }),
   };
 }
@@ -173,6 +175,7 @@ describe('board inspection operations', () => {
           thicknessMm: 0.035,
           material: 'Cu',
           dielectricConstant: 1,
+          lossTangent: undefined,
           copperWeightOz: 1,
         },
         {
@@ -181,6 +184,7 @@ describe('board inspection operations', () => {
           thicknessMm: 1.5,
           material: 'FR4',
           dielectricConstant: 4.2,
+          lossTangent: undefined,
           copperWeightOz: 0,
         },
       ],
@@ -219,6 +223,182 @@ describe('board inspection operations', () => {
     expect(warn).toHaveBeenCalledWith(
       '[easyeda-mcp-pro]',
       'failed to read physical stackup',
+      expect.any(Error),
+    );
+  });
+
+  it('reads the IPCB_PhysicalStackingConfiguration list shape and derives copper weight', async () => {
+    const { operations } = makeOperations({
+      DMT_Pcb: { getCurrentPcbInfo: async () => ({ uuid: 'pcb-1' }) },
+      PCB_Layer: {
+        getTheNumberOfCopperLayers: async () => 2,
+        getCurrentPhysicalStackingConfiguration: async () => ({
+          name: 'JLC04161H-7628',
+          layerCount: 2,
+          list: [
+            {
+              'Layer Id': 1,
+              Layer: 'Top',
+              'Layer Type': 'TOP',
+              Type: 'Copper',
+              Material: 'Outer layer thickness 1oz',
+              Thickness: 0.035,
+              Permittivity: 0,
+              'Loss Tangent': 0,
+            },
+            {
+              'Layer Id': 361,
+              Layer: 'Dielectric1',
+              'Layer Type': 'SUBSTRATE',
+              Type: 'Substrate',
+              Material: '7628 RC49% 8.6mil',
+              Thickness: 0.2104,
+              Permittivity: 4.4,
+              'Loss Tangent': 0.02,
+            },
+            {
+              'Layer Id': 15,
+              Layer: 'GND02',
+              'Layer Type': 'SIGNAL',
+              Type: 'Copper',
+              Material: 'Inner layer thickness',
+              Thickness: 0.0152,
+            },
+          ],
+        }),
+      },
+    });
+
+    await expect(operations.getStackup()).resolves.toEqual({
+      totalLayers: 2,
+      boardThicknessMm: 0.2606,
+      available: true,
+      source: 'physical_stackup',
+      layers: [
+        {
+          name: 'Top',
+          type: 'copper',
+          thicknessMm: 0.035,
+          material: 'Outer layer thickness 1oz',
+          dielectricConstant: 0,
+          lossTangent: 0,
+          copperWeightOz: 1,
+        },
+        {
+          name: 'Dielectric1',
+          type: 'dielectric',
+          thicknessMm: 0.2104,
+          material: '7628 RC49% 8.6mil',
+          dielectricConstant: 4.4,
+          lossTangent: 0.02,
+          copperWeightOz: undefined,
+        },
+        {
+          name: 'GND02',
+          type: 'copper',
+          thicknessMm: 0.0152,
+          material: 'Inner layer thickness',
+          dielectricConstant: undefined,
+          lossTangent: undefined,
+          copperWeightOz: 0.43,
+        },
+      ],
+    });
+  });
+
+  it('falls back to the document source when the physical stacking API returns null', async () => {
+    const documentSource = [
+      'DOCTYPE',
+      '{"type":"LAYER","ticket":2,"id":"[\\"LAYER\\",1]"}||{"layerId":1,"layerType":"TOP","layerName":"Top","use":true}|',
+      '{"type":"LAYER","id":"[\\"LAYER\\",361]"}||{"layerType":"SUBSTRATE","layerName":"Dielectric1","use":false}|',
+      '{"type":"LAYER","id":"[\\"LAYER\\",2]"}||{"layerType":"BOTTOM","layerName":"Bottom","use":true}|',
+      '{"type":"LAYER","id":"[\\"LAYER\\",3]"}||{"layerType":"TOP_SILK","layerName":"Top Silkscreen","use":true}|',
+      '{"type":"LAYER_PHYS","id":"[\\"LAYER_PHYS\\",2]"}||{"material":"Outer layer thickness 1oz","thickness":1.378,"permittivity":0,"lossTangent":0,"zIndex":1002}|',
+      '{"type":"LAYER_PHYS","ticket":40,"id":"[\\"LAYER_PHYS\\",1]"}||{"material":"Outer layer thickness 1oz","thickness":1.378,"permittivity":0,"lossTangent":0,"zIndex":1000}|',
+      '{"type":"LAYER_PHYS","id":"[\\"LAYER_PHYS\\",361]"}||{"material":"7628 RC49% 8.6mil","thickness":8.283,"permittivity":4.4,"lossTangent":0.02,"zIndex":1001}|',
+      '{"type":"TRACK","id":"[\\"TRACK\\",9]"}||{"layer":1}|',
+    ].join('\n');
+    const callFirst = vi.fn(async () => documentSource);
+    const { operations } = makeOperations(
+      {
+        DMT_Pcb: { getCurrentPcbInfo: async () => ({ uuid: 'pcb-1' }) },
+        PCB_Layer: {
+          getTheNumberOfCopperLayers: async () => 2,
+          getCurrentPhysicalStackingConfiguration: async () => null,
+        },
+      },
+      {},
+      callFirst,
+    );
+
+    await expect(operations.getStackup()).resolves.toEqual({
+      totalLayers: 2,
+      boardThicknessMm: 0.2804,
+      available: true,
+      source: 'document_source',
+      layers: [
+        {
+          name: 'Top',
+          type: 'copper',
+          thicknessMm: 0.035,
+          material: 'Outer layer thickness 1oz',
+          dielectricConstant: 0,
+          lossTangent: 0,
+          copperWeightOz: 1,
+        },
+        {
+          name: 'Dielectric1',
+          type: 'dielectric',
+          thicknessMm: 0.2104,
+          material: '7628 RC49% 8.6mil',
+          dielectricConstant: 4.4,
+          lossTangent: 0.02,
+          copperWeightOz: undefined,
+        },
+        {
+          name: 'Bottom',
+          type: 'copper',
+          thicknessMm: 0.035,
+          material: 'Outer layer thickness 1oz',
+          dielectricConstant: 0,
+          lossTangent: 0,
+          copperWeightOz: 1,
+        },
+      ],
+    });
+    expect(callFirst).toHaveBeenCalledWith(['SYS_FileManager.getDocumentSource']);
+  });
+
+  it('degrades to copper_layer_count_only when the document source is unusable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const callFirst = vi
+      .fn()
+      .mockResolvedValueOnce('no layer lines here')
+      .mockRejectedValueOnce(new Error('source unavailable'));
+    const { operations } = makeOperations(
+      {
+        DMT_Pcb: { getCurrentPcbInfo: async () => ({ uuid: 'pcb-1' }) },
+        PCB_Layer: {
+          getTheNumberOfCopperLayers: async () => 2,
+          getCurrentPhysicalStackingConfiguration: async () => ({ list: [] }),
+        },
+      },
+      {},
+      callFirst,
+    );
+
+    const expected = {
+      totalLayers: 2,
+      boardThicknessMm: undefined,
+      layers: [],
+      available: false,
+      source: 'copper_layer_count_only',
+    };
+    await expect(operations.getStackup()).resolves.toEqual(expected);
+    await expect(operations.getStackup()).resolves.toEqual(expected);
+    expect(warn).toHaveBeenCalledWith(
+      '[easyeda-mcp-pro]',
+      'failed to read document-source stackup',
       expect.any(Error),
     );
   });
@@ -756,6 +936,7 @@ describe('board inspection operations', () => {
           thicknessMm: undefined,
           material: '',
           dielectricConstant: undefined,
+          lossTangent: undefined,
           copperWeightOz: undefined,
         },
       ],
