@@ -63,9 +63,9 @@ async function listAllComponents(
   let offset = 0;
   for (;;) {
     const page = await ctx.bridge.call<
-      { projectId: string; limit: number; offset: number },
+      { projectId: string; limit: number; offset: number; allPages: boolean },
       BridgeComponentPage
-    >('schematic.listComponents', { projectId, limit: pageSize, offset });
+    >('schematic.listComponents', { projectId, limit: pageSize, offset, allPages: false });
     const items = page?.items ?? [];
     all.push(...items);
     const total = page?.total ?? items.length;
@@ -101,6 +101,12 @@ export async function gatherLivePrimitiveBounds(
   const selected = options.primitiveIds
     ? components.filter((c) => c.primitiveId && requested.has(c.primitiveId))
     : components;
+  const unknown = [...requested].filter((id) => !selected.some((c) => c.primitiveId === id));
+  if (unknown.length > 0) {
+    throw new Error(
+      `Not component IDs on the current page: ${unknown.join(', ')}. primitive_bounds covers components only; text, wires and flags are not supported.`,
+    );
+  }
 
   const ids = selected
     .map((c) => c.primitiveId)

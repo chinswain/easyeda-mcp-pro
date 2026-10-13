@@ -1,5 +1,60 @@
 # Changelog
 
+## [Unreleased]
+
+### Added — agentic PCB workflow (placement → routing → copper → DRC → export)
+
+New server tools (all writes take `projectId` + `boardName`, `op_id`, `confirmWrite: true`; every result carries
+`success`, `verified` (+ `expected`/`actual` on mismatch), `error_code`/`hint` on failure; units are mm from the
+board origin, degrees CCW, layer names as strings):
+
+* **Placement:** `easyeda_pcb_component_bounds`, `easyeda_pcb_move_component`, `easyeda_pcb_move_group`,
+  `easyeda_pcb_add_keepout` (polygon / rect / ring, optional `max_height_mm` height rule),
+  `easyeda_pcb_list_keepouts`, `easyeda_pcb_check_placement` (`component_forbidden` / `too_tall` / `height_unknown`).
+* **Rules & nets:** `easyeda_pcb_get_design_rules`, `easyeda_pcb_set_design_rules`, `easyeda_pcb_set_net_class`,
+  `easyeda_pcb_set_diff_pair`, `easyeda_pcb_net_status`, `easyeda_pcb_set_stackup`.
+* **Routing & copper:** `easyeda_pcb_route_net`, `easyeda_pcb_route_diff_pair` (refuses with `SKEW_EXCEEDED` before
+  writing), `easyeda_pcb_delete_tracks`, `easyeda_pcb_ripup_net`, `easyeda_pcb_add_via_fence`,
+  `easyeda_pcb_stitch_region`, `easyeda_pcb_add_copper_pour`, `easyeda_pcb_copper_islands`.
+* **Verification:** `easyeda_pcb_connectivity_check`, `easyeda_pcb_manufacturing_check` (profiles
+  `JLCPCB 4-layer`, `JLCPCB 2-layer`; folds in DRC), per-violation output on `easyeda_drc_run` / `easyeda_erc_run`.
+* **Export & BOM:** `easyeda_pcb_set_component_attribute` (`dnp`, `exclude_from_bom`), `easyeda_export_bom`
+  (drops `Fitted=No` / `DNP=Yes`, `expect_absent[]` confirmation), `easyeda_export_drill`, `easyeda_export_step`,
+  `easyeda_project_export_epro` (fails closed with `NOT_SUPPORTED`); `sha256` on every export artifact including
+  `easyeda_export_gerbers` / `_pick_place` / `_pdf` / `_netlist`.
+* **Schematic:** `easyeda_schematic_wires_at_pin`, `easyeda_schematic_delete_wire`, `easyeda_schematic_rename_net`,
+  `easyeda_schematic_set_net_label`, `easyeda_schematic_component_replace`.
+* **Visual:** `easyeda_canvas_capture_board_region` (region in board mm; `layers[]` recorded, not yet applied).
+* **Contract:** `easyeda_get_capabilities` now returns a `contract` block (guard, idempotency, verification,
+  pagination, error shape, transactions, reads) plus the known-limitations list.
+* **Bridge sharing:** one owner relay per plugin plus loopback-only attached clients; writes serialised through the
+  owner; `easyeda_bridge_status` reports `role`, owner pid and client count; stale listener cleanup; plugin
+  build-hash check.
+* **Bridge extension methods (unit-tested, need plugin re-import):** `pcb.componentBounds`, `pcb.moveComponent`,
+  `pcb.moveGroup`, `pcb.addKeepout`, `pcb.getDesignRules`, `pcb.setDesignRules`, `pcb.setNetClass`,
+  `pcb.setDiffPair`, `pcb.setNetRules`, `pcb.netStatus`, `pcb.setStackup`, `pcb.routeNet`, `pcb.deleteTracks`,
+  `pcb.ripupNet`, `pcb.addVias`, `pcb.addCopperPour`, `pcb.copperIslands`, `pcb.connectivityCheck`,
+  `pcb.setComponentAttribute`, `export.bom`, `export.step`, `schematic.wiresAtPin`, `schematic.deleteWire`,
+  `schematic.renameNet`, `schematic.setNetLabel`, `schematic.componentReplace`. Every `pcb.*` call with an
+  `expect` object is refused with `WRONG_DOCUMENT` unless the focused PCB matches.
+
+### Changed
+
+* Legacy PCB writes (`easyeda_pcb_add_track/_via/_text/_silkscreen_line/_arc/_hole`, `_modify_via`,
+  `_delete_component`) accept the optional `projectId`/`boardName` guard.
+* `easyeda_schematic_components` gained filters and pagination; empty nets report `not_available` instead of `[]`;
+  pin/PCB read tools accept `reference`; oversized results spill to an artifact file.
+
+### Fixed
+
+* `easyeda_pcb_modify_via`, arcs on the Board Outline layer, mounting holes, bridge auto-reconnect status.
+
+### Known limitations
+
+See `easyeda_get_capabilities` → `known_limitations`: keep-out height rules live in the server artifact store;
+stackup changes only set the copper-layer count; canvas region capture ignores `layers[]`; drill files ship inside
+the Gerber zip; no `.epro` export API; new extension methods are validated by unit tests only until the plugin is
+rebuilt, re-imported and the server restarted.
 ## [1.2.0](https://github.com/oaslananka/easyeda-mcp-pro/compare/easyeda-mcp-pro-v1.1.0...easyeda-mcp-pro-v1.2.0) (2026-10-09)
 
 

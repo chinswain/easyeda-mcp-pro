@@ -8,9 +8,27 @@ import {
   revertDispatcher,
 } from '../bridge/hotswap.js';
 import { fetchComponentPins } from './schematic-helpers.js';
+import {
+  unappliedWriteMessage,
+  verifyPropertyWrite,
+  writeVerificationSchema,
+} from './write-verify.js';
+
+const API_PATH = /^[A-Za-z]+_[A-Za-z0-9]+\.[A-Za-z][A-Za-z0-9_]*$/;
 
 const apiCallInputSchema = z.object({
-  path: z.string().regex(/^[A-Za-z]+_[A-Za-z0-9]+\.[A-Za-z][A-Za-z0-9_]*$/),
+  path: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'Class.method, e.g. PCB_PrimitiveRegion.get. An "eda." prefix and lowercase class prefix are accepted.',
+    ),
+  className: z
+    .string()
+    .optional()
+    .describe('Alternative to path: class name, e.g. PCB_PrimitiveLine.'),
+  method: z.string().optional().describe('Alternative to path: method name, e.g. getAll.'),
   args: z
     .array(z.unknown())
     .default([])
@@ -20,11 +38,88 @@ const apiCallInputSchema = z.object({
   confirmWrite: z.boolean().default(false),
 });
 
-const writeMethodPattern =
-  /\.(create|delete|modify|open|openProject|save|import|export|reorder|remove|update|set|reset|done)$/i;
+/** "eda.pcb_PrimitiveRegion.get" / {className, method} → "PCB_PrimitiveRegion.get". */
+export function resolveApiPath(input: {
+  path?: string;
+  className?: string;
+  method?: string;
+}): string {
+  const raw = (input.path ?? [input.className, input.method].filter(Boolean).join('.'))
+    .trim()
+    .replace(/^eda\./, '');
+  const path = raw.replace(/^([a-z]+)_/, (_, p: string) => `${p.toUpperCase()}_`);
+  if (!API_PATH.test(path)) {
+    throw new Error(
+      `Invalid API path "${raw}". Expected Class.method, e.g. SCH_PrimitiveWire.getAll.`,
+    );
+  }
+  return path;
+}
+
+// Methods that only read. Anything else can mutate and needs confirmWrite=true.
+const readMethodPattern = /\.(get|is|has|list|search|find|query|count)[A-Za-z0-9_]*$/;
 
 function requiresWriteConfirmation(path: string): boolean {
-  return writeMethodPattern.test(path);
+  return !readMethodPattern.test(path);
+}
+
+/** Resolved path, or the refusal to return (bad path / unconfirmed write). */
+function gateApiCall(input: z.infer<typeof apiCallInputSchema>) {
+  let path: string;
+  try {
+    path = resolveApiPath(input);
+  } catch (err) {
+    return {
+      ok: false,
+      path: input.path ?? '',
+      error_code: 'INVALID_API_PATH',
+      error: (err as Error).message,
+    };
+  }
+  if (requiresWriteConfirmation(path) && !input.confirmWrite) {
+    return {
+      ok: false,
+      path,
+      requires_confirmation: true,
+      error: `Potentially mutating EasyEDA API method "${path}" requires confirmWrite=true.`,
+    };
+  }
+  return path;
+}
+
+/**
+ * `<Class>.modify(primitiveId, property)` is the one passthrough shape whose
+ * effect can be checked cheaply: the same class exposes `get(primitiveId)`.
+ * EasyEDA drops property keys it does not recognise without complaining, so an
+ * unverified modify is indistinguishable from a no-op. Other api.call paths
+ * stay unverified.
+ */
+function modifyVerificationTarget(
+  path: string,
+  args: unknown[],
+): { readPath: string; primitiveId: string; property: Record<string, unknown> } | undefined {
+  if (!/\.modify$/i.test(path)) return undefined;
+  const [primitiveId, property] = args;
+  if (typeof primitiveId !== 'string' || primitiveId.length === 0) return undefined;
+  if (typeof property !== 'object' || property === null || Array.isArray(property))
+    return undefined;
+  return {
+    readPath: `${path.slice(0, path.lastIndexOf('.'))}.get`,
+    primitiveId,
+    property: property as Record<string, unknown>,
+  };
+}
+
+async function readPrimitiveState(
+  ctx: ToolContext,
+  readPath: string,
+  primitiveId: string,
+): Promise<Record<string, unknown> | undefined> {
+  const response = await ctx.bridge.call('api.call', { path: readPath, args: [primitiveId] });
+  const state = (response as { result?: { state?: unknown } } | undefined)?.result?.state;
+  return typeof state === 'object' && state !== null && !Array.isArray(state)
+    ? (state as Record<string, unknown>)
+    : undefined;
 }
 
 type LiveSmokeStep = {
@@ -299,11 +394,12 @@ function registerDiagnosticsApi(
     name: 'easyeda_api_call',
     title: 'Call EasyEDA API',
     description:
-      'Controlled call to a documented EasyEDA class method by path, for example SCH_PrimitiveWire.getAll. Polygon-typed parameters use explicit $polygon/$complexPolygon tagged arguments. This is not raw JavaScript execution.',
+      'Controlled call to a documented EasyEDA class method by path, for example SCH_PrimitiveWire.getAll. Polygon-typed parameters use explicit $polygon/$complexPolygon tagged arguments. Pour instance adapters PCB_PrimitivePour.getCopperRegion and rebuildCopperRegion take one argument object with primitiveId and pcbUuid. Check serialization.incomplete before using geometry. This is not raw JavaScript execution.',
     profile: 'full',
     evidence: ['runtime-probe', 'pro-api-types', 'official-docs'],
     risk: 'high',
     confirmWrite: true,
+    confirmationPolicy: 'handler',
     group: 'diagnostics',
     version: '1.0.0',
     annotations: {
@@ -316,30 +412,69 @@ function registerDiagnosticsApi(
       ok: z.boolean(),
       path: z.string(),
       resolvedPath: z.string().optional(),
+      serialization: z.object({ maxDepth: z.number(), incomplete: z.boolean() }).optional(),
       result: z.unknown().optional(),
       error: z.string().optional(),
+      error_code: z.string().optional(),
+      verification: writeVerificationSchema.optional(),
       requires_confirmation: z.boolean().optional(),
     }),
     handler: async (ctx: ToolContext, params: unknown) => {
-      const { path, args, confirmWrite } = apiCallInputSchema.parse(params);
-      if (requiresWriteConfirmation(path) && !confirmWrite) {
-        return {
-          ok: false,
-          path,
-          requires_confirmation: true,
-          error: `Potentially mutating EasyEDA API method "${path}" requires confirmWrite=true.`,
-        };
+      const input = apiCallInputSchema.parse(params);
+      const { args } = input;
+      const gate = gateApiCall(input);
+      if (typeof gate !== 'string') return gate;
+      const path = gate;
+
+      const target = modifyVerificationTarget(path, args);
+      let before: Record<string, unknown> | undefined;
+      let readBackFailure: string | undefined;
+      if (target) {
+        try {
+          before = await readPrimitiveState(ctx, target.readPath, target.primitiveId);
+        } catch (err) {
+          readBackFailure = `pre-write read-back failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
       }
 
       try {
         const result = await ctx.bridge.call('api.call', { path, args });
-        const data = result as { path?: string; resolvedPath?: string; result?: unknown };
-        return {
+        const data = result as {
+          path?: string;
+          resolvedPath?: string;
+          result?: unknown;
+          serialization?: { maxDepth: number; incomplete: boolean };
+        };
+        const response = {
           ok: true,
           path: data.path ?? path,
           resolvedPath: data.resolvedPath,
           result: data.result,
+          serialization: data.serialization,
         };
+        if (!target) return response;
+
+        let after: Record<string, unknown> | undefined;
+        try {
+          after = await readPrimitiveState(ctx, target.readPath, target.primitiveId);
+        } catch (err) {
+          readBackFailure ??= `post-write read-back failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+
+        const verification = verifyPropertyWrite(target.property, before, after);
+        if (readBackFailure && verification.unverifiable_reason) {
+          verification.unverifiable_reason = readBackFailure;
+        }
+        if (verification.unapplied.length > 0) {
+          return {
+            ...response,
+            ok: false,
+            error_code: 'WRITE_NOT_PERSISTED',
+            error: unappliedWriteMessage(path, verification),
+            verification,
+          };
+        }
+        return { ...response, verification };
       } catch (err) {
         return {
           ok: false,

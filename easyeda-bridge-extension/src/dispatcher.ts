@@ -32,6 +32,7 @@ import {
   createPcbMutationOperations,
   type PcbMutationOperations,
 } from './pcb-mutation-operations.js';
+import { createPcbAgenticOperations, type PcbAgenticOperations } from './pcb-agentic-operations.js';
 import { createPcbReadOperations, type PcbReadOperations } from './pcb-read-operations.js';
 import { createPcbWriteOperations, type PcbWriteOperations } from './pcb-write-operations.js';
 import { createProjectOperations, type ProjectOperations } from './project-operations.js';
@@ -79,26 +80,50 @@ const METHOD_LIST: readonly string[] = [
   'design.drc',
   'design.erc',
   'design.ruleCheck',
+  'export.bom',
   'export.netlist',
   'export.pdf',
   'export.pickPlace',
+  'export.step',
   'inventory.getPrice',
   'inventory.search',
   'library.getDeviceByLcscId',
+  'pcb.addArc',
+  'pcb.addCopperPour',
+  'pcb.addHole',
+  'pcb.addKeepout',
   'pcb.addSilkscreenLine',
   'pcb.addText',
   'pcb.addTrack',
   'pcb.addVia',
+  'pcb.addVias',
   'pcb.addZone',
+  'pcb.componentBounds',
+  'pcb.connectivityCheck',
+  'pcb.copperIslands',
   'pcb.deleteComponent',
+  'pcb.deleteTracks',
   'pcb.exportRouteContext',
+  'pcb.getDesignRules',
   'pcb.listComponents',
   'pcb.listFills',
   'pcb.listRegions',
   'pcb.listTracks',
   'pcb.listVias',
   'pcb.modifyComponent',
+  'pcb.modifyVia',
+  'pcb.moveComponent',
+  'pcb.moveGroup',
+  'pcb.netStatus',
   'pcb.rebuildCopper',
+  'pcb.ripupNet',
+  'pcb.routeNet',
+  'pcb.setComponentAttribute',
+  'pcb.setDesignRules',
+  'pcb.setDiffPair',
+  'pcb.setNetClass',
+  'pcb.setNetRules',
+  'pcb.setStackup',
   'project.export',
   'project.open',
   'project.save',
@@ -107,11 +132,13 @@ const METHOD_LIST: readonly string[] = [
   'schematic.addRectangle',
   'schematic.addText',
   'schematic.addWire',
+  'schematic.componentReplace',
   'schematic.connectPinToNet',
   'schematic.connectPinsByNet',
   'schematic.createNetFlag',
   'schematic.createNetPort',
   'schematic.deletePrimitive',
+  'schematic.deleteWire',
   'schematic.getNetDetail',
   'schematic.getPinNoConnect',
   'schematic.getPrimitiveSnapshot',
@@ -124,12 +151,15 @@ const METHOD_LIST: readonly string[] = [
   'schematic.placeComponent',
   'schematic.primitiveBounds',
   'schematic.recreatePrimitiveSnapshot',
+  'schematic.renameNet',
   'schematic.restorePrimitiveSnapshot',
   'schematic.searchDevice',
+  'schematic.setNetLabel',
   'schematic.setPinNoConnect',
   'schematic.setTitleBlock',
   'schematic.syncToPcb',
   'schematic.validateNetlist',
+  'schematic.wiresAtPin',
   'system.apiInventory',
   'system.getStatus',
   'system.inspectComponents',
@@ -150,6 +180,7 @@ let exportOperations: ExportOperations;
 let pcbMutationOperations: PcbMutationOperations;
 let pcbReadOperations: PcbReadOperations;
 let pcbWriteOperations: PcbWriteOperations;
+let pcbAgenticOperations: PcbAgenticOperations;
 let projectOperations: ProjectOperations;
 let readOnlyOperations: ReadOnlyOperations;
 let schematicComponentInspection: SchematicComponentInspectionOperations;
@@ -1160,6 +1191,7 @@ function readPinNoConnected(pin: unknown): boolean {
 async function resolvePinNoConnectState(
   componentPrimitiveId: string,
   pinNumber: string,
+  pinPrimitiveIdFilter?: string,
 ): Promise<PinNoConnectState> {
   const pins = await callFirst(
     [
@@ -1168,8 +1200,13 @@ async function resolvePinNoConnectState(
     ],
     componentPrimitiveId,
   );
-  const matches = (Array.isArray(pins) ? pins : []).filter(
-    (pin) => readPinNumber(pin) === String(pinNumber),
+  const pinIdOf = (pin: unknown) =>
+    extractPrimitiveId(pin) || nativeScalarString(safeGetState(pin, 'PrimitiveId'));
+  // pinPrimitiveId disambiguates pins that share a number (e.g. connector mounting tabs all numbered "0").
+  const matches = (Array.isArray(pins) ? pins : []).filter((pin) =>
+    pinPrimitiveIdFilter
+      ? pinIdOf(pin) === pinPrimitiveIdFilter
+      : readPinNumber(pin) === String(pinNumber),
   );
   if (matches.length === 0) {
     throw newBridgeError(
@@ -1183,13 +1220,17 @@ async function resolvePinNoConnectState(
     throw newBridgeError(
       'PIN_AMBIGUOUS',
       `Pin number "${pinNumber}" matched ${matches.length} pins on component "${componentPrimitiveId}"`,
-      'Use a component whose pin numbers are unique before applying a no-connect marker.',
-      { componentPrimitiveId, pinNumber, matchCount: matches.length },
+      'Retry with pinPrimitiveId set to one of candidatePinPrimitiveIds.',
+      {
+        componentPrimitiveId,
+        pinNumber,
+        matchCount: matches.length,
+        candidatePinPrimitiveIds: matches.map(pinIdOf),
+      },
     );
   }
   const pin = matches[0];
-  const pinPrimitiveId =
-    extractPrimitiveId(pin) || nativeScalarString(safeGetState(pin, 'PrimitiveId'));
+  const pinPrimitiveId = pinIdOf(pin);
   if (!pinPrimitiveId) {
     throw newBridgeError(
       'PIN_PRIMITIVE_ID_UNAVAILABLE',
@@ -1222,8 +1263,9 @@ async function setPinNoConnectState(
   componentPrimitiveId: string,
   pinNumber: string,
   noConnected: boolean,
+  pinPrimitiveId?: string,
 ) {
-  const before = await resolvePinNoConnectState(componentPrimitiveId, pinNumber);
+  const before = await resolvePinNoConnectState(componentPrimitiveId, pinNumber, pinPrimitiveId);
   if (before.noConnected === noConnected) {
     return {
       ...publicPinNoConnectState(before),
@@ -1254,7 +1296,7 @@ async function setPinNoConnectState(
     await pinClass.modify(before.pin, { noConnected });
   }
 
-  const after = await resolvePinNoConnectState(componentPrimitiveId, pinNumber);
+  const after = await resolvePinNoConnectState(componentPrimitiveId, pinNumber, pinPrimitiveId);
   if (after.noConnected !== noConnected) {
     throw newBridgeError(
       'PIN_NO_CONNECT_VERIFY_FAILED',
@@ -1464,8 +1506,11 @@ async function getNetDetailApi(netName: string, operationTimeoutMs: unknown): Pr
 async function getPinNoConnectApi(
   componentPrimitiveId: string,
   pinNumber: string,
+  pinPrimitiveId?: string,
 ): Promise<unknown> {
-  return publicPinNoConnectState(await resolvePinNoConnectState(componentPrimitiveId, pinNumber));
+  return publicPinNoConnectState(
+    await resolvePinNoConnectState(componentPrimitiveId, pinNumber, pinPrimitiveId),
+  );
 }
 
 async function dispatch(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
@@ -1645,12 +1690,14 @@ async function dispatch(method: string, params: Record<string, unknown> = {}): P
         params.primitiveId as string,
         params.pinNumber as string,
         params.noConnected !== false,
+        params.pinPrimitiveId as string | undefined,
       );
     case 'schematic.createNetFlag': {
       const nfX = params.x as number;
       const nfY = params.y as number;
       const nfName = params.netName as string;
-      const nfRotation = (params.rotation as number) ?? 0;
+      // createNetFlag rotates the opposite way to getState_Rotation (verified live: 90 is stored as 270).
+      const nfRotation = (360 - (((params.rotation as number) ?? 0) % 360)) % 360;
       // EasyEDA Pro exposes two distinct primitives here (verified against the
       // live runtime inventory):
       //   - SCH_PrimitiveComponent.createNetFlag(identification, net, x, y, rotation, mirror)
@@ -1694,7 +1741,8 @@ async function dispatch(method: string, params: Record<string, unknown> = {}): P
       const npX = params.x as number;
       const npY = params.y as number;
       const npName = params.netName as string;
-      const npRotation = (params.rotation as number) ?? 0;
+      // createNetPort rotates the opposite way to getState_Rotation (verified live: 90 is stored as 270).
+      const npRotation = (360 - (((params.rotation as number) ?? 0) % 360)) % 360;
       // SCH_PrimitiveComponent.createNetPort(direction, net, x, y, rotation, mirror)
       // where direction is one of IN / OUT / BI. Map the MCP portType onto it.
       const portTypeMap: Record<string, 'IN' | 'OUT' | 'BI'> = {
@@ -1923,6 +1971,14 @@ export function createDispatcher(toolkit: DispatcherToolkit): Dispatcher {
     extractPrimitiveId,
     createBridgeError: newBridgeError,
   });
+  pcbAgenticOperations = createPcbAgenticOperations({
+    callFirst,
+    readFirstPath,
+    extractPrimitiveId,
+    createBridgeError: newBridgeError,
+    deletePrimitives: (ids) => pcbReadOperations.deletePrimitives(ids),
+    normalizeBinaryResult,
+  });
   projectOperations = createProjectOperations({ callFirst });
   schematicComponentInspection = createSchematicComponentInspectionOperations({
     readFirstPath,
@@ -1989,6 +2045,7 @@ export function createDispatcher(toolkit: DispatcherToolkit): Dispatcher {
     pcbWriteOperations,
     pcbMutationOperations,
     pcbReadOperations,
+    pcbAgenticOperations,
     systemApiOperations,
   });
   textAlignModeCache.clear();

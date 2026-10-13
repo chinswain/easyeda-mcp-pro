@@ -75,11 +75,12 @@ async function extractLiveSemanticNetlist(
     } catch {
       continue; // best-effort; skip components whose pins can't be read live
     }
-    const devicePins: PinValidationMetadata[] = pins.map((p) => ({
-      pin: p.pinNumber,
-      name: p.pinName,
-      electricalType: classifyPinElectricalType(p.pinName, p.pinType) ?? 'passive',
-    }));
+    // Unclassified pins (native "Undefined") are left out so checks treat them as unknown,
+    // not passive; defaulting them to passive flagged U7/L2/ANT1 nets as passive-only.
+    const devicePins: PinValidationMetadata[] = pins.flatMap((p) => {
+      const electricalType = classifyPinElectricalType(p.pinName, p.pinType);
+      return electricalType ? [{ pin: p.pinNumber, name: p.pinName, electricalType }] : [];
+    });
     devices.push({ id: c.reference, ref: c.reference, pins: devicePins });
   }
 
@@ -94,6 +95,39 @@ async function extractLiveSemanticNetlist(
   }));
 
   return { nets, devices };
+}
+
+/** Per-violation detail fields shared by DRC and ERC. */
+const violationDetailSchema = {
+  rule_id: z.string().optional(),
+  primitive_ids: z.array(z.string()).default([]),
+  pin_names: z.array(z.string()).default([]),
+  net_names: z.array(z.string()).default([]),
+  page: z.string().optional(),
+};
+
+interface BridgeViolation {
+  rule?: string;
+  ruleId?: unknown;
+  description?: string;
+  location?: { x?: number; y?: number; layer?: string };
+  severity?: string;
+  net?: string;
+  nets?: string[];
+  pins?: string[];
+  primitiveIds?: string[];
+  component?: string;
+  page?: unknown;
+}
+
+function violationDetail(v: BridgeViolation) {
+  return {
+    rule_id: v.ruleId == null ? undefined : String(v.ruleId),
+    primitive_ids: v.primitiveIds ?? [],
+    pin_names: v.pins ?? [],
+    net_names: v.nets ?? (v.net ? [v.net] : []),
+    page: v.page == null ? undefined : String(v.page),
+  };
 }
 
 function registerDrcErcTools(
@@ -138,6 +172,7 @@ function registerDrcErcTools(
           severity: z.enum(['error', 'warning', 'info']),
           net: z.string().optional(),
           component: z.string().optional(),
+          ...violationDetailSchema,
         }),
       ),
       total_violations: z.number().int().nonnegative(),
@@ -152,14 +187,7 @@ function registerDrcErcTools(
       try {
         const result = await ctx.bridge.call('design.drc', { projectId, rules });
         const data = result as {
-          violations?: Array<{
-            rule?: string;
-            description?: string;
-            location?: { x?: number; y?: number; layer?: string };
-            severity?: string;
-            net?: string;
-            component?: string;
-          }>;
+          violations?: Array<BridgeViolation>;
           totalViolations?: number;
           errorCount?: number;
           warningCount?: number;
@@ -180,6 +208,7 @@ function registerDrcErcTools(
             : 'info') as 'error' | 'warning' | 'info',
           net: v.net,
           component: v.component,
+          ...violationDetail(v),
         }));
         const errorCount =
           data.errorCount ??
@@ -248,6 +277,8 @@ function registerDrcErcTools(
               y: z.number(),
             })
             .optional(),
+          rule: z.string().optional(),
+          ...violationDetailSchema,
         }),
       ),
       total_violations: z.number().int().nonnegative(),
@@ -287,13 +318,7 @@ function registerDrcErcTools(
           ...schematicReadBridgeParams(scope, pageUuid),
         });
         const data = result as {
-          violations?: Array<{
-            net?: string;
-            component?: string;
-            description?: string;
-            severity?: string;
-            location?: { x?: number; y?: number };
-          }>;
+          violations?: Array<BridgeViolation>;
           totalViolations?: number;
           errorCount?: number;
           warningCount?: number;
@@ -317,6 +342,8 @@ function registerDrcErcTools(
                 y: v.location.y ?? 0,
               }
             : undefined,
+          rule: v.rule,
+          ...violationDetail(v),
         }));
         return {
           project_id: projectId,

@@ -25,7 +25,14 @@ describe('createSchematicSnapshotRecreator', () => {
       requirePublicTextAlignMode: vi.fn((value) => value as 1),
     });
 
-    expect(recreator.supportedKinds).toEqual(['circle', 'polygon', 'rectangle', 'text', 'wire']);
+    expect(recreator.supportedKinds).toEqual([
+      'circle',
+      'netflag',
+      'polygon',
+      'rectangle',
+      'text',
+      'wire',
+    ]);
   });
 
   it('constructs wire and annotation primitives with the established native arguments', async () => {
@@ -129,5 +136,39 @@ describe('createSchematicSnapshotRecreator', () => {
     await expect(recreator.create(snapshot('component', {}))).rejects.toMatchObject({
       code: 'UNSUPPORTED_RUNTIME',
     });
+    await expect(
+      recreator.create(snapshot('netflag', { x: 1, y: 2, net: 'X' })),
+    ).rejects.toMatchObject({
+      code: 'UNSUPPORTED_RUNTIME',
+    });
+  });
+
+  it('recreates power flags with createNetFlag', async () => {
+    const callFirst = vi.fn(async () => ({ primitiveId: 'created' }));
+    const recreator = createSchematicSnapshotRecreator({
+      callFirst,
+      createBridgeError: vi.fn((code, message) => Object.assign(new Error(message), { code })),
+      requirePublicTextAlignMode: vi.fn((value) => value as 1),
+    });
+
+    await recreator.create(
+      snapshot('netflag', {
+        x: 10,
+        y: 20,
+        rotation: 90,
+        mirror: false,
+        net: 'VBAT',
+        identification: 'Power',
+      }),
+    );
+    expect(callFirst).toHaveBeenCalledWith(
+      ['SCH_PrimitiveComponent.createNetFlag', 'sch_PrimitiveComponent.createNetFlag'],
+      'Power',
+      'VBAT',
+      10,
+      20,
+      90,
+      false,
+    );
   });
 });

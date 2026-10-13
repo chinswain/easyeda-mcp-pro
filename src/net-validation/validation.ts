@@ -348,7 +348,13 @@ function checkMissingPowerNet(input: NetValidationInput): NetValidationIssue[] {
 
   // Also check for required specific power net names
   for (const required of REQUIRED_POWER_NETS) {
-    const found = input.nets.some((n) => n.name.toUpperCase() === required.toUpperCase());
+    // "+3V3" and "3.3V" name the same rail as "3V3".
+    const canonical = (name: string) =>
+      name
+        .toUpperCase()
+        .replace(/^\+/, '')
+        .replace(/^(\d+)\.(\d+)V$/, '$1V$2');
+    const found = input.nets.some((n) => canonical(n.name) === canonical(required));
     if (!found) {
       issues.push(
         netWarning(
@@ -683,7 +689,15 @@ function checkOutputContention(input: NetValidationInput): NetValidationIssue[] 
     const semanticNodes = resolveSemanticNodes(input, net).filter(
       (node) => !isNoConnect(node.electricalType),
     );
-    const activeDrivers = semanticNodes.filter((node) => isActiveDriver(node.electricalType));
+    // Same-named pins of one device (e.g. two "OUT" pins) are one driver, not contention.
+    const activeDrivers = semanticNodes
+      .filter((node) => isActiveDriver(node.electricalType))
+      .filter(
+        (node, i, all) =>
+          node.pinName === undefined ||
+          all.findIndex((o) => o.displayRef === node.displayRef && o.pinName === node.pinName) ===
+            i,
+      );
 
     if (net.type === 'signal' && activeDrivers.length > 1) {
       issues.push(
@@ -806,10 +820,9 @@ function checkPassiveOnlySignalNets(input: NetValidationInput): NetValidationIss
 
   for (const net of input.nets) {
     if (net.type !== 'signal' || net.nodes.length < 2) continue;
-    const semanticNodes = resolveSemanticNodes(input, net).filter(
-      (node) => node.electricalType !== undefined,
-    );
-    if (semanticNodes.length === 0) continue;
+    const semanticNodes = resolveSemanticNodes(input, net);
+    // An unclassified pin could be the active source; don't guess.
+    if (semanticNodes.some((node) => node.electricalType === undefined)) continue;
     if (semanticNodes.every((node) => isPassiveLike(node.electricalType))) {
       issues.push(
         netWarning(

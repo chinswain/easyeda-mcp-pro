@@ -13,7 +13,12 @@ import {
 import { type ToolContext, type ToolDefinition } from './types.js';
 
 const pointSchema = z.object({ x: z.number().finite(), y: z.number().finite() });
-const operationIdSchema = z.string().min(1).max(120);
+const operationIdSchema = z
+  .string()
+  .min(1)
+  .max(120)
+  .optional()
+  .describe('Defaults to op<N>, the 1-based position in operations');
 const textAlignModeSchema = z.number().int().min(1).max(9);
 const deviceItemSchema = z
   .object({ libraryUuid: z.string().min(1), uuid: z.string().min(1) })
@@ -143,6 +148,13 @@ const setPinNoConnectOperationSchema = z.object({
   action: z.literal('setPinNoConnect'),
   primitiveId: z.string().min(1),
   pinNumber: z.string().min(1),
+  pinPrimitiveId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'Pin primitive ID; required when several pins share pinNumber (PIN_AMBIGUOUS lists candidates)',
+    ),
   noConnected: z.boolean().default(true),
 });
 const deleteOperationSchema = z.object({
@@ -156,8 +168,11 @@ const batchOperationSchema = z.union([
   setPinNoConnectOperationSchema,
   deleteOperationSchema,
 ]);
-type BatchOperation = z.infer<typeof batchOperationSchema>;
-type CreateOperation = z.infer<typeof createOperationSchema>;
+type BatchOperation = z.infer<typeof batchOperationSchema> & { operationId: string };
+type CreateOperation = z.infer<typeof createOperationSchema> & { operationId: string };
+
+const defaultOperationId = (operationId: string | undefined, index: number) =>
+  operationId ?? `op${index + 1}`;
 
 const batchInputSchema = z
   .object({
@@ -172,18 +187,19 @@ const batchInputSchema = z
     const operationIds = new Set<string>();
     const targetIds = new Set<string>();
     for (const [index, operation] of value.operations.entries()) {
-      if (operationIds.has(operation.operationId)) {
+      const operationId = defaultOperationId(operation.operationId, index);
+      if (operationIds.has(operationId)) {
         context.addIssue({
           code: 'custom',
           path: ['operations', index, 'operationId'],
-          message: `Duplicate operationId: ${operation.operationId}`,
+          message: `Duplicate operationId: ${operationId}`,
         });
       }
-      operationIds.add(operation.operationId);
+      operationIds.add(operationId);
       if (operation.action !== 'create') {
         const targetId =
           operation.action === 'setPinNoConnect'
-            ? `${operation.primitiveId}#pin:${operation.pinNumber}`
+            ? `${operation.primitiveId}#pin:${operation.pinPrimitiveId ?? operation.pinNumber}`
             : operation.primitiveId;
         if (targetIds.has(targetId)) {
           context.addIssue({
@@ -199,7 +215,9 @@ const batchInputSchema = z
       }
     }
   });
-type BatchInput = z.infer<typeof batchInputSchema>;
+type BatchInput = Omit<z.infer<typeof batchInputSchema>, 'operations'> & {
+  operations: BatchOperation[];
+};
 
 const batchItemResultSchema = z.object({
   operation_id: z.string(),
@@ -239,7 +257,14 @@ const batchOutputSchema = z.object({
 });
 type BatchItemResult = z.infer<typeof batchItemResultSchema>;
 
-const RECREATABLE_DELETE_KINDS = new Set(['wire', 'text', 'rectangle', 'circle', 'polygon']);
+const RECREATABLE_DELETE_KINDS = new Set([
+  'wire',
+  'text',
+  'rectangle',
+  'circle',
+  'polygon',
+  'netflag',
+]);
 
 function bridgeCreateRequest(operation: CreateOperation): { method: string; params: object } {
   const { operationId: _operationId, action: _action, primitiveKind: _kind, ...params } = operation;
@@ -307,11 +332,118 @@ async function pollAddedPrimitiveIds(
   return [];
 }
 
+type Segment = [number, number, number, number];
+
+function onSegment(x: number, y: number, [x1, y1, x2, y2]: Segment): boolean {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lengthSquared = dx * dx + dy * dy;
+  const t =
+    lengthSquared === 0
+      ? 0
+      : Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / lengthSquared));
+  return Math.hypot(x - (x1 + t * dx), y - (y1 + t * dy)) <= 0.01;
+}
+
+function toSegments(nums: number[]): Segment[] {
+  const segments: Segment[] = [];
+  for (let i = 0; i + 3 < nums.length; i += 4) segments.push(nums.slice(i, i + 4) as Segment);
+  return segments;
+}
+
+function segmentsTouch(a: Segment, b: Segment): boolean {
+  return (
+    onSegment(a[0], a[1], b) ||
+    onSegment(a[2], a[3], b) ||
+    onSegment(b[0], b[1], a) ||
+    onSegment(b[2], b[3], a)
+  );
+}
+
+/** Wires EasyEDA would merge a new wire into: any that shares a point with it. Stored lines are
+ *  flat segment lists (x1,y1,x2,y2 per segment). */
+async function touchingWireIds(
+  context: ToolContext,
+  points: Array<{ x: number; y: number }>,
+): Promise<string[]> {
+  const created = toSegments(
+    points.flatMap((p, i) =>
+      i === 0 || i === points.length - 1 ? [p.x, p.y] : [p.x, p.y, p.x, p.y],
+    ),
+  );
+  const touching: string[] = [];
+  for (let offset = 0, total = 1; offset < total; offset += 50) {
+    const page = (await context.bridge.call('system.inspectWires', { limit: 50, offset })) as {
+      total?: number;
+      samples?: Array<{ primitiveId?: string; line?: unknown }>;
+    };
+    total = page.total ?? 0;
+    for (const wire of page.samples ?? []) {
+      const stored = toSegments(
+        Array.isArray(wire.line) ? (wire.line.flat(Infinity) as unknown[]).map(Number) : [],
+      );
+      if (wire.primitiveId && stored.some((s) => created.some((c) => segmentsTouch(s, c)))) {
+        touching.push(wire.primitiveId);
+      }
+    }
+  }
+  return touching;
+}
+
+/** EasyEDA merges a wire that touches an existing one into it and returns the existing ID, so
+ *  the create is recorded as a modify of that wire; rollback then restores it instead of
+ *  deleting it. ponytail: one touched wire only; merging several would delete all but one. */
+async function executeMergingWireCreate(
+  context: ToolContext,
+  transactionId: string,
+  operation: CreateOperation & { primitiveKind: 'wire' },
+  targetId: string,
+) {
+  const request = bridgeCreateRequest(operation);
+  const beforeIds = new Set(await listPrimitiveIds(context.bridge, 'wire'));
+  const executed = await getGlobalTransactionManager().runModify(transactionId, targetId, {
+    getSnapshot: async () => getPrimitiveSnapshot(context.bridge, targetId, 'wire'),
+    apply: async () => {
+      const result = await context.bridge.call(request.method, request.params);
+      const added = await pollAddedPrimitiveIds(
+        context,
+        'wire',
+        beforeIds,
+        CREATE_RECONCILE_FAILURE_ATTEMPTS,
+      );
+      if (added.length > 0) {
+        for (const id of added)
+          await deletePrimitiveExact(context.bridge, id).catch(() => undefined);
+        throw new Error(
+          `Wire ${operation.operationId} touches wire ${targetId} but EasyEDA did not merge them`,
+        );
+      }
+      return result;
+    },
+    restore: async (snapshot) =>
+      context.bridge.call('schematic.restorePrimitiveSnapshot', { snapshot }),
+  });
+  return { targetId, operation: executed.operation };
+}
+
 async function executeCreate(
   context: ToolContext,
   transactionId: string,
   operation: CreateOperation,
 ) {
+  if (operation.primitiveKind === 'wire') {
+    const touching = await touchingWireIds(context, operation.points);
+    if (touching.length > 1) {
+      throw new TransactionError(
+        'TRANSACTION_OPERATION_FAILED',
+        `Wire ${operation.operationId} touches wires ${touching.join(', ')}; EasyEDA would merge them into one, which a batch cannot undo. Draw it with easyeda_schematic_add_wire.`,
+        { touchingWireIds: touching },
+      );
+    }
+    const [mergeTarget] = touching;
+    if (mergeTarget)
+      return executeMergingWireCreate(context, transactionId, operation, mergeTarget);
+  }
   const manager = getGlobalTransactionManager();
   const beforeIds = new Set(await listPrimitiveIds(context.bridge, operation.primitiveKind));
   const request = bridgeCreateRequest(operation);
@@ -393,11 +525,13 @@ async function getPinNoConnectSnapshot(
   projectId: string,
   primitiveId: string,
   pinNumber: string,
+  pinPrimitiveId?: string,
 ): Promise<PinNoConnectSnapshot> {
   const state = (await context.bridge.call('schematic.getPinNoConnect', {
     projectId,
     primitiveId,
     pinNumber,
+    pinPrimitiveId,
   })) as PinNoConnectBridgeState;
   if (!state.pinPrimitiveId || typeof state.noConnected !== 'boolean') {
     throw new Error('Pin no-connect readback did not return an addressable pin and boolean state');
@@ -423,15 +557,24 @@ async function executeSetPinNoConnect(
     projectId,
     operation.primitiveId,
     operation.pinNumber,
+    operation.pinPrimitiveId,
   );
-  return getGlobalTransactionManager().runModify(transactionId, initial.pinPrimitiveId, {
+  const pinPrimitiveId = initial.pinPrimitiveId;
+  return getGlobalTransactionManager().runModify(transactionId, pinPrimitiveId, {
     getSnapshot: async () =>
-      getPinNoConnectSnapshot(context, projectId, operation.primitiveId, operation.pinNumber),
+      getPinNoConnectSnapshot(
+        context,
+        projectId,
+        operation.primitiveId,
+        operation.pinNumber,
+        pinPrimitiveId,
+      ),
     apply: async () =>
       context.bridge.call('schematic.setPinNoConnect', {
         projectId,
         primitiveId: operation.primitiveId,
         pinNumber: operation.pinNumber,
+        pinPrimitiveId,
         noConnected: operation.noConnected,
       }),
     restore: async (snapshot) => {
@@ -440,6 +583,7 @@ async function executeSetPinNoConnect(
         projectId: previous.projectId,
         primitiveId: previous.componentPrimitiveId,
         pinNumber: previous.pinNumber,
+        pinPrimitiveId: previous.pinPrimitiveId,
         noConnected: previous.noConnected,
       });
     },
@@ -741,7 +885,9 @@ async function failedBatchResponse(
     results,
     error_code: error instanceof TransactionError ? error.code : 'BATCH_WRITE_FAILED',
     error: error instanceof Error ? error.message : String(error),
-    rollback_error: rollback.rollbackError,
+    rollback_error:
+      rollback.rollbackError &&
+      `${rollback.rollbackError}. The document stays locked; check the listed primitives, then call easyeda_project_rollback_transaction with abandon: true.`,
   };
 }
 
@@ -749,7 +895,14 @@ async function handleSchematicBatchWrite(
   context: ToolContext,
   input: unknown,
 ): Promise<BatchOutput> {
-  const parsed = batchInputSchema.parse(input);
+  const raw = batchInputSchema.parse(input);
+  const parsed: BatchInput = {
+    ...raw,
+    operations: raw.operations.map((operation, index) => ({
+      ...operation,
+      operationId: defaultOperationId(operation.operationId, index),
+    })),
+  };
   const results: BatchItemResult[] = [];
   let session: BatchSession = {
     transactionId: parsed.transactionId,

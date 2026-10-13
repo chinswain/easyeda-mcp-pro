@@ -141,6 +141,9 @@ function readTitleBlockPageSize(
     .toUpperCase();
   if (sizeValue === 'A3') return TITLE_BLOCK_PAGE_SIZES.A3;
   if (sizeValue === 'A4') return TITLE_BLOCK_PAGE_SIZES.A4;
+  // Pages without a Size field name the frame symbol instead, e.g. "Drawing-Symbol_A4" (seen live).
+  const symbolSize = /_(A[34])$/i.exec(String(readRecord(titleBlock.Symbol).value ?? ''))?.[1];
+  if (symbolSize) return TITLE_BLOCK_PAGE_SIZES[symbolSize.toUpperCase() as 'A3' | 'A4'];
   return undefined;
 }
 

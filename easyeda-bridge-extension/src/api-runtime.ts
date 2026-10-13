@@ -3,10 +3,11 @@ import {
   isAllowedApiClassName,
   isAllowedApiPath,
   normalizeApiClassName,
-  normalizeValue,
   readMember,
   withClassNameVariants,
 } from './api-introspection.js';
+import { normalizeApiResult } from './api-result.js';
+import { callPourInstance, isPourInstancePath } from './pour-api.js';
 import type { DispatcherToolkit } from './toolkit.js';
 import { isRecord, readPath, readPathParent, type JsonValue } from './utils.js';
 
@@ -205,6 +206,11 @@ export function createApiRuntime(
       );
     }
 
+    if (isPourInstancePath(path)) {
+      const result = await callPourInstance(path, args, callFirst, createBridgeError);
+      return { path, resolvedPath: `bridge:${path}`, ...normalizeApiResult(result) };
+    }
+
     for (const candidate of getApiCandidates()) {
       for (const candidatePath of withClassNameVariants([path])) {
         const fn = readPath<unknown>(candidate.root, candidatePath);
@@ -218,7 +224,7 @@ export function createApiRuntime(
         return {
           path,
           resolvedPath: `${candidate.name}.${candidatePath}`,
-          result: normalizeValue(result, 5),
+          ...normalizeApiResult(result),
         };
       }
     }

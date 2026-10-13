@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { mmToMil } from './agentic-common.js';
 import { type ToolDefinition, type ToolContext } from './types.js';
 import { type EnvConfig } from '../config/env.js';
 import { inferSchematicSheetGeometry } from '../workflows/schematic-safe-region.js';
@@ -214,6 +215,70 @@ function registerVisualTools(
           tabId,
         });
         return buildCaptureOutput(result);
+      } catch (err) {
+        return {
+          captured: false,
+          not_available: true,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  });
+
+  registry.register({
+    name: 'easyeda_canvas_capture_board_region',
+    title: 'Capture PCB region (board mm)',
+    description:
+      'Capture a PCB region given in board millimetres from the origin (x, y, width, height). ' +
+      'Converts to native canvas units (mil) and zooms the viewport there. `layers` is recorded ' +
+      'for the caller but not applied (the capture API has no layer filter): layers_applied is false.',
+    profile: 'core',
+    evidence: ['pro-api-types'],
+    risk: 'low',
+    confirmWrite: false,
+    group: 'visual',
+    version: '1.0.0',
+    annotations: { readOnlyHint: true, idempotentHint: false },
+    inputSchema: z.object({
+      x_mm: z.number(),
+      y_mm: z.number(),
+      width_mm: z.number().positive(),
+      height_mm: z.number().positive(),
+      layers: z.array(z.string()).default([]),
+      tabId: z.string().optional(),
+    }),
+    outputSchema: captureOutputSchema.extend({
+      layers_requested: z.array(z.string()).optional(),
+      layers_applied: z.boolean().optional(),
+      region_mm: z
+        .object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() })
+        .optional(),
+    }),
+    imageContent: imageContentFromCapture,
+    imageContentOmitFields: ['image_base64'],
+    handler: async (ctx: ToolContext, params: unknown) => {
+      const p = params as {
+        x_mm: number;
+        y_mm: number;
+        width_mm: number;
+        height_mm: number;
+        layers: string[];
+        tabId?: string;
+      };
+      try {
+        const region = normalizeCanvasRegion({
+          left: mmToMil(p.x_mm),
+          right: mmToMil(p.x_mm + p.width_mm),
+          top: mmToMil(p.y_mm),
+          bottom: mmToMil(p.y_mm + p.height_mm),
+        });
+        const result = await ctx.bridge.call('canvas.captureRegion', { ...region, tabId: p.tabId });
+        return {
+          ...buildCaptureOutput(result),
+          layers_requested: p.layers,
+          layers_applied: false,
+          region_mm: { x: p.x_mm, y: p.y_mm, width: p.width_mm, height: p.height_mm },
+        };
       } catch (err) {
         return {
           captured: false,

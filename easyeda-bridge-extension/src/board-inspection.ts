@@ -476,9 +476,13 @@ async function countMountingHoles(pcbPadClass: any): Promise<number> {
     let mountingHoles = 0;
     const pads = await pcbPadClass.getAll();
     for (const pad of pads || []) {
-      const holeType = await readPrimitiveStateResolved(pad, 'HoleType');
-      const holeSize = readFiniteNumber(await readPrimitiveStateResolved(pad, 'HoleSize')) ?? 0;
-      if (holeType === 'MountingHole' || holeSize > 2) mountingHoles++;
+      // Live pads carry Hole: ['ROUND', diameterMil] (no HoleType key). A
+      // mounting hole is any through-hole pad with no net; >2 mm (79 mil) plated
+      // pads with no net count as well.
+      const hole = (await readPrimitiveStateResolved(pad, 'Hole')) as unknown[] | null;
+      const holeSize = Array.isArray(hole) ? (readFiniteNumber(hole[1]) ?? 0) : 0;
+      const net = await readPrimitiveStateResolved(pad, 'Net');
+      if (holeSize > 0 && !net) mountingHoles++;
     }
     return mountingHoles;
   } catch (error) {

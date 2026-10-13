@@ -10,6 +10,12 @@ import {
   recreatePrimitiveSnapshot,
   TransactionError,
 } from '../transactions/index.js';
+import {
+  unappliedWriteMessage,
+  verifyPropertyWrite,
+  writeVerificationSchema,
+  type WriteVerification,
+} from './write-verify.js';
 
 const deviceItemSchema = z
   .object({
@@ -216,6 +222,42 @@ function transactionFailure(err: unknown) {
   };
 }
 
+/**
+ * `schematic.modifyPrimitive` merges the requested bag into a snapshot before
+ * handing it to EasyEDA's `modify()`, which drops keys it does not recognise
+ * without reporting anything. The snapshot property bag uses the same camelCase
+ * vocabulary as the merge, so comparing it either side of the write proves
+ * whether the requested keys landed.
+ */
+function snapshotProperty(snapshot: unknown): Record<string, unknown> | undefined {
+  const property = (snapshot as { property?: unknown } | undefined)?.property;
+  return typeof property === 'object' && property !== null && !Array.isArray(property)
+    ? (property as Record<string, unknown>)
+    : undefined;
+}
+
+async function readSnapshotProperty(
+  ctx: ToolContext,
+  primitiveId: string,
+): Promise<Record<string, unknown> | undefined> {
+  return snapshotProperty(await ctx.bridge.call('schematic.getPrimitiveSnapshot', { primitiveId }));
+}
+
+async function verifyPrimitiveModification(
+  ctx: ToolContext,
+  primitiveId: string,
+  property: Record<string, unknown>,
+  before: Record<string, unknown> | undefined,
+): Promise<WriteVerification> {
+  let after: Record<string, unknown> | undefined;
+  try {
+    after = await readSnapshotProperty(ctx, primitiveId);
+  } catch {
+    // Leave `after` unset — verifyPropertyWrite reports that as unverifiable.
+  }
+  return verifyPropertyWrite(property, before, after);
+}
+
 function bridgeFailure(err: unknown) {
   const record = err && typeof err === 'object' ? (err as Record<string, unknown>) : undefined;
   const data =
@@ -405,6 +447,13 @@ const setPinNoConnectInputSchema = z.object({
   projectId: z.string().min(1).describe('The project/schematic ID'),
   primitiveId: z.string().min(1).describe('The component primitive ID'),
   pinNumber: z.string().min(1).describe('The exact component pin number'),
+  pinPrimitiveId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'Pin primitive ID; required when several pins share pinNumber (PIN_AMBIGUOUS lists candidates)',
+    ),
   noConnected: z
     .boolean()
     .default(true)
@@ -989,7 +1038,8 @@ function registerSchematicWriteTools(
     description:
       'Safely modify a schematic primitive while preserving omitted fields. With transactionId and ' +
       'projectId, capture before/after snapshots and automatically restore the prior state if the ' +
-      'write or post-write read fails. Component moves keep connected wires attached.',
+      'write or post-write read fails. Component moves keep connected wires attached. Keys the runtime ' +
+      'ignored fail with WRITE_NOT_PERSISTED.',
     profile: 'core',
     evidence: ['official-docs'],
     risk: 'medium',
@@ -1015,6 +1065,7 @@ function registerSchematicWriteTools(
         .optional(),
       error_code: z.string().optional(),
       error: z.string().optional(),
+      verification: writeVerificationSchema.optional(),
       details: z.record(z.string(), z.unknown()).optional(),
     }),
     handler: async (ctx: ToolContext, params: unknown) => {
@@ -1022,11 +1073,32 @@ function registerSchematicWriteTools(
         modifyPrimitiveInputSchema.parse(params);
       try {
         if (!transactionId) {
+          let before: Record<string, unknown> | undefined;
+          try {
+            before = await readSnapshotProperty(ctx, primitiveId);
+          } catch {
+            // Unreadable pre-state only costs the verification, not the write.
+          }
           const result = await ctx.bridge.call('schematic.modifyPrimitive', {
             primitiveId,
             property,
           });
-          return { success: true, result };
+          const verification = await verifyPrimitiveModification(
+            ctx,
+            primitiveId,
+            property,
+            before,
+          );
+          if (verification.unapplied.length > 0) {
+            return {
+              success: false,
+              result,
+              error_code: 'WRITE_NOT_PERSISTED',
+              error: unappliedWriteMessage('schematic.modifyPrimitive', verification),
+              verification,
+            };
+          }
+          return { success: true, result, verification };
         }
 
         const manager = transactionManagerForProject(transactionId, projectId);
@@ -1041,16 +1113,38 @@ function registerSchematicWriteTools(
           restore: async (snapshot) =>
             ctx.bridge.call('schematic.restorePrimitiveSnapshot', { snapshot }),
         });
+        // runModify already read the primitive either side of the write; verify
+        // from its snapshots instead of paying for two more reads.
+        const verification = verifyPropertyWrite(
+          property,
+          snapshotProperty(applied.operation.beforeSnapshot),
+          snapshotProperty(applied.operation.afterSnapshot),
+        );
+        const transaction = {
+          id: transactionId,
+          operation_id: applied.operation.id,
+          operation_state: applied.operation.state,
+          before_hash: applied.operation.beforeHash,
+          after_hash: applied.operation.afterHash,
+        };
+        if (verification.unapplied.length > 0) {
+          // No compensation: the ignored keys changed nothing, and the recorded
+          // snapshots still describe whatever did land, so an explicit rollback
+          // of the transaction remains correct.
+          return {
+            success: false,
+            result: applied.result,
+            error_code: 'WRITE_NOT_PERSISTED',
+            error: unappliedWriteMessage('schematic.modifyPrimitive', verification),
+            verification,
+            transaction,
+          };
+        }
         return {
           success: true,
           result: applied.result,
-          transaction: {
-            id: transactionId,
-            operation_id: applied.operation.id,
-            operation_state: applied.operation.state,
-            before_hash: applied.operation.beforeHash,
-            after_hash: applied.operation.afterHash,
-          },
+          verification,
+          transaction,
         };
       } catch (err) {
         return transactionFailure(err);
@@ -1097,6 +1191,7 @@ function registerSchematicWriteTools(
           projectId: p.projectId,
           primitiveId: p.primitiveId,
           pinNumber: p.pinNumber,
+          pinPrimitiveId: p.pinPrimitiveId,
           noConnected: p.noConnected,
         })) as {
           componentPrimitiveId?: string;

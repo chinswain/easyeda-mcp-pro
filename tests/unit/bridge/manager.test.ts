@@ -2,8 +2,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { join } from 'node:path';
 import { WebSocket } from 'ws';
 import { afterAll, describe, it, expect, vi } from 'vitest';
 import { EnvSchema } from '../../../src/config/env.js';
@@ -173,10 +172,12 @@ describe('BridgeManager', () => {
     expect(manager.connected).toBe(true);
 
     const firstClosed = waitForClose(first);
+    const firstReplaced = waitForMessage(first);
     const second = await openSocket(port);
     sendHandshake(second);
     await expect(waitForMessage(second)).resolves.toMatchObject({ type: 'hello' });
 
+    await expect(firstReplaced).resolves.toMatchObject({ type: 'replaced' });
     await expect(firstClosed).resolves.toBe(4000);
     expect(manager.connected).toBe(true);
     expect(manager.activePort).toBe(port);
@@ -521,8 +522,14 @@ describe('BridgeManager - reconnect', () => {
 
     expect(reconnectingSpy).toHaveBeenCalledTimes(1);
     expect(reconnectingSpy).toHaveBeenCalledWith(expect.objectContaining({ attempt: 1 }));
+    expect(manager.reconnecting).toBe(true);
+    expect(manager.reconnectAttemptCount).toBe(1);
+    expect(manager.nextReconnectAtMs).toBeGreaterThan(Date.now() - 1);
+    expect(manager.lastDisconnectMs).toBeGreaterThan(0);
 
     manager.disconnect('test complete');
+    expect(manager.reconnecting).toBe(false);
+    expect(manager.nextReconnectAtMs).toBeUndefined();
   });
 
   it('should reset reconnect counter on successful handshake', async () => {
@@ -1052,7 +1059,7 @@ describe('BridgeManager - process ownership', () => {
     rmSync(lockDir, { recursive: true, force: true });
   });
 
-  it('shares one EasyEDA listener across multiple local MCP managers', async () => {
+  it('keeps a second manager off a second bridge port and attaches it to the live owner instead', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'easyeda-bridge-owner-'));
     testDataDirs.add(dataDir);
     const ownerPort = await getFreePort();
@@ -1063,253 +1070,27 @@ describe('BridgeManager - process ownership', () => {
       BRIDGE_PORT_SCAN: `${ownerPort},${fallbackPort}`,
     });
     const owner = new BridgeManager(config);
-    const follower = new BridgeManager(config);
-    let extension: WebSocket | undefined;
+    const blocked = new BridgeManager(config);
 
     try {
       await owner.connect();
-      await follower.connect();
+      await blocked.connect();
 
       expect(owner.activePort).toBe(ownerPort);
-      expect(follower.activePort).toBe(ownerPort);
-      expect(follower.state).toBe('connecting');
-      expect(follower.ownershipConflict).toBeUndefined();
-
-      extension = await openSocket(ownerPort);
-      sendHandshake(extension, {
-        extensionVersion: SERVER_VERSION,
-        loaderVersion: SERVER_VERSION,
+      // No second listener: the fallback port stays free and the blocked manager rides the owner's port.
+      expect(blocked.activePort).toBe(ownerPort);
+      expect(blocked.role).toBe('attached');
+      expect(blocked.ownershipConflict).toMatchObject({
+        blockedByOtherInstance: true,
+        ownerPid: process.pid,
+        ownerPort,
       });
-      await waitForMessage(extension); // hello
-      await follower.waitForConnection(1_000);
-
-      const resultPromise = follower.call('system.getStatus', {});
-      const request = (await waitForMessage(extension)) as { id: string; method: string };
-      expect(request.method).toBe('system.getStatus');
-      extension.send(
-        JSON.stringify({
-          id: request.id,
-          type: 'response',
-          ok: true,
-          result: { shared: true },
-          durationMs: 1,
-        }),
-      );
-
-      await expect(resultPromise).resolves.toEqual({ shared: true });
-      expect(follower.connected).toBe(true);
-      expect(follower.extensionVersion).toBe(SERVER_VERSION);
+      await expect(blocked.call('system.getStatus', {})).rejects.toThrow(/Bridge not connected/);
     } finally {
-      extension?.close();
-      follower.disconnect('test complete');
+      blocked.disconnect('test complete');
       owner.disconnect('test complete');
     }
   });
-
-  it('coordinates concurrent local MCP startup without binding fallback bridge ports', async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), 'easyeda-bridge-concurrent-start-'));
-    testDataDirs.add(dataDir);
-    const ownerPort = await getFreePort();
-    const fallbackPort = await getFreePort();
-    const config = createTestConfig({
-      DATA_DIR: dataDir,
-      BRIDGE_HOST: '127.0.0.1',
-      BRIDGE_PORT_SCAN: `${ownerPort},${fallbackPort}`,
-    });
-    const first = new BridgeManager(config);
-    const second = new BridgeManager(config);
-
-    try {
-      await Promise.all([first.connect(), second.connect()]);
-
-      expect(first.activePort).toBe(ownerPort);
-      expect(second.activePort).toBe(ownerPort);
-      expect(first.ownershipConflict).toBeUndefined();
-      expect(second.ownershipConflict).toBeUndefined();
-      expect([first.state, second.state]).toEqual(['connecting', 'connecting']);
-    } finally {
-      second.disconnect('test complete');
-      first.disconnect('test complete');
-    }
-  });
-
-  it('routes bridge calls from a separate local MCP process through the owner relay', async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), 'easyeda-bridge-cross-process-'));
-    testDataDirs.add(dataDir);
-    const port = await getFreePort();
-    const config = createTestConfig({
-      DATA_DIR: dataDir,
-      BRIDGE_HOST: '127.0.0.1',
-      BRIDGE_PORT_SCAN: String(port),
-    });
-    const owner = new BridgeManager(config);
-    let extension: WebSocket | undefined;
-    let child: ReturnType<typeof spawn> | undefined;
-
-    try {
-      await owner.connect();
-      extension = await openSocket(port);
-      sendHandshake(extension, {
-        extensionVersion: SERVER_VERSION,
-        loaderVersion: SERVER_VERSION,
-      });
-      await waitForMessage(extension); // hello
-
-      const managerUrl = pathToFileURL(resolve('src/bridge/manager.ts')).href;
-      const envUrl = pathToFileURL(resolve('src/config/env.ts')).href;
-      const loggerUrl = pathToFileURL(resolve('src/utils/logger.ts')).href;
-      const script = `
-        import { BridgeManager } from ${JSON.stringify(managerUrl)};
-        import { EnvSchema } from ${JSON.stringify(envUrl)};
-        import { createLogger } from ${JSON.stringify(loggerUrl)};
-        const config = EnvSchema.parse({
-          NODE_ENV: 'test',
-          BRIDGE_WAIT_FOR_EDA_MS: 0,
-          DATA_DIR: ${JSON.stringify(dataDir)},
-          BRIDGE_HOST: '127.0.0.1',
-          BRIDGE_PORT_SCAN: ${JSON.stringify(String(port))},
-        });
-        createLogger(config);
-        const manager = new BridgeManager(config);
-        try {
-          await manager.connect();
-          const result = await manager.call('system.getStatus', {});
-          console.log('FOLLOWER_RESULT=' + JSON.stringify({
-            connected: manager.connected,
-            activePort: manager.activePort,
-            result,
-          }));
-        } finally {
-          manager.disconnect('child complete');
-        }
-      `;
-      child = spawn(
-        process.execPath,
-        ['--import', 'tsx', '--input-type=module', '--eval', script],
-        {
-          cwd: process.cwd(),
-          stdio: ['ignore', 'pipe', 'pipe'],
-          env: { ...process.env, NODE_OPTIONS: '' },
-        },
-      );
-      let childStdout = '';
-      let childStderr = '';
-      child.stdout?.on('data', (chunk) => (childStdout += chunk.toString()));
-      child.stderr?.on('data', (chunk) => (childStderr += chunk.toString()));
-      const earlyExit = new Promise<never>((_, reject) => {
-        child?.once('exit', (code) =>
-          reject(
-            new Error(
-              `child follower exited before routing a bridge request (code ${String(code)}): ${childStderr || childStdout}`,
-            ),
-          ),
-        );
-      });
-
-      const request = (await Promise.race([
-        waitForMessage(extension),
-        earlyExit,
-        new Promise<never>((_, reject) =>
-          setTimeout(
-            () =>
-              reject(
-                new Error(
-                  `child follower did not route a bridge request: ${childStderr || childStdout}`,
-                ),
-              ),
-            5_000,
-          ),
-        ),
-      ])) as { id: string; method: string };
-      expect(request.method).toBe('system.getStatus');
-      extension.send(
-        JSON.stringify({
-          id: request.id,
-          type: 'response',
-          ok: true,
-          result: { crossProcess: true },
-          durationMs: 1,
-        }),
-      );
-
-      const code = await new Promise<number | null>((done, reject) => {
-        if (child?.exitCode !== null && child?.exitCode !== undefined) {
-          done(child.exitCode);
-          return;
-        }
-        child?.once('error', reject);
-        child?.once('exit', done);
-      });
-
-      expect(code, childStderr).toBe(0);
-      const marker = childStdout.split(/\r?\n/).find((line) => line.startsWith('FOLLOWER_RESULT='));
-      expect(marker, `${childStdout}\n${childStderr}`).toBeDefined();
-      expect(JSON.parse(marker!.slice('FOLLOWER_RESULT='.length))).toEqual({
-        connected: true,
-        activePort: port,
-        result: { crossProcess: true },
-      });
-    } finally {
-      if (child && child.exitCode === null) child.kill();
-      extension?.close();
-      owner.disconnect('test complete');
-    }
-  }, 10_000);
-
-  it('automatically promotes a follower after the original owner exits', async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), 'easyeda-bridge-failover-'));
-    testDataDirs.add(dataDir);
-    const port = await getFreePort();
-    const config = createTestConfig({
-      DATA_DIR: dataDir,
-      BRIDGE_HOST: '127.0.0.1',
-      BRIDGE_PORT_SCAN: String(port),
-    });
-    const owner = new BridgeManager(config);
-    const follower = new BridgeManager(config);
-    let extension: WebSocket | undefined;
-
-    try {
-      await owner.connect();
-      await follower.connect();
-      owner.disconnect('owner exit');
-
-      await vi.waitFor(() => expect(follower.state).toBe('error'));
-      await vi.waitFor(
-        () => {
-          expect(follower.state).toBe('connecting');
-          expect(follower.activePort).toBe(port);
-          expect(follower.ownershipConflict).toBeUndefined();
-        },
-        { timeout: 4_000, interval: 25 },
-      );
-
-      extension = await openSocket(port);
-      sendHandshake(extension, {
-        extensionVersion: SERVER_VERSION,
-        loaderVersion: SERVER_VERSION,
-      });
-      await waitForMessage(extension); // hello
-      await follower.waitForConnection(1_000);
-
-      const resultPromise = follower.call('system.getStatus', {});
-      const request = (await waitForMessage(extension)) as { id: string; method: string };
-      extension.send(
-        JSON.stringify({
-          id: request.id,
-          type: 'response',
-          ok: true,
-          result: { promoted: true },
-          durationMs: 1,
-        }),
-      );
-      await expect(resultPromise).resolves.toEqual({ promoted: true });
-    } finally {
-      extension?.close();
-      follower.disconnect('test complete');
-      owner.disconnect('test complete');
-    }
-  }, 10_000);
 
   it('reclaims a stale ownership lock whose recorded process is no longer alive', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'easyeda-bridge-stale-owner-'));
@@ -1425,4 +1206,62 @@ describe('parsePortScanSpec', () => {
   it('should return empty array for invalid format', () => {
     expect(parsePortScanSpec('abc')).toEqual([]);
   });
+});
+
+describe('BridgeManager - attached relay', () => {
+  it('attaches a second manager to the owner and relays calls to the plugin socket', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'easyeda-bridge-attach-'));
+    testDataDirs.add(dataDir);
+    const port = await getFreePort();
+    const owner = new BridgeManager(
+      createTestConfig({ DATA_DIR: dataDir, BRIDGE_PORT_SCAN: String(port) }),
+    );
+    await owner.connect();
+    expect(owner.role).toBe('owner');
+    expect(owner.ownerPid).toBe(process.pid);
+
+    // Same DATA_DIR + live owner pid => lock conflict => attach path.
+    const attached = new BridgeManager(
+      createTestConfig({ DATA_DIR: dataDir, BRIDGE_PORT_SCAN: String(port) }),
+    );
+    await attached.connect();
+    expect(attached.role).toBe('attached');
+    expect(attached.ownerPid).toBe(process.pid);
+    expect(attached.activePort).toBe(port);
+    expect(attached.connected).toBe(false); // owner has no plugin yet
+    await vi.waitFor(() => expect(owner.attachedClients).toBe(1));
+
+    await expect(attached.call('system.getStatus')).rejects.toThrow(/Bridge not connected/);
+
+    // Fake plugin handshakes with the owner; attached client sees pluginConnected.
+    const plugin = await openSocket(port);
+    sendHandshake(plugin, { buildId: 'dabc1xdef2x3456' });
+    await waitForMessage(plugin); // hello
+    await vi.waitFor(() => expect(attached.connected).toBe(true));
+    expect(attached.extensionBuildId).toBe('dabc1xdef2x3456');
+
+    plugin.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type !== 'request') return;
+      plugin.send(
+        JSON.stringify({
+          id: msg.id,
+          type: 'response',
+          ok: true,
+          result: { echo: msg.method },
+          durationMs: 1,
+        }),
+      );
+    });
+    await expect(attached.call('system.getStatus')).resolves.toEqual({ echo: 'system.getStatus' });
+
+    // Plugin drops: attached client reports disconnected without losing its owner link.
+    plugin.close();
+    await vi.waitFor(() => expect(attached.connected).toBe(false));
+    expect(attached.role).toBe('attached');
+
+    attached.disconnect('test complete');
+    await vi.waitFor(() => expect(owner.attachedClients).toBe(0));
+    owner.disconnect('test complete');
+  }, 15_000);
 });

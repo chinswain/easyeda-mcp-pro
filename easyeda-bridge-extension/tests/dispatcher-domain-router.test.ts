@@ -65,6 +65,119 @@ function createDependencies() {
         params,
       })),
       addVia: vi.fn(async (params: Record<string, unknown>) => ({ method: 'via', params })),
+      modifyVia: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'modifyVia',
+        params,
+      })),
+      addArc: vi.fn(async (params: Record<string, unknown>) => ({ method: 'arc', params })),
+      addHole: vi.fn(async (params: Record<string, unknown>) => ({ method: 'hole', params })),
+    },
+    pcbAgenticOperations: {
+      requireExpectedBoard: vi.fn(async () => undefined),
+      addCopperPour: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.addCopperPour',
+        params,
+      })),
+      addKeepout: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.addKeepout',
+        params,
+      })),
+      addVias: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.addVias',
+        params,
+      })),
+      componentBounds: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.componentBounds',
+        params,
+      })),
+      connectivityCheck: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.connectivityCheck',
+        params,
+      })),
+      copperIslands: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.copperIslands',
+        params,
+      })),
+      deleteTracks: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.deleteTracks',
+        params,
+      })),
+      getDesignRules: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.getDesignRules',
+        params,
+      })),
+      moveComponent: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.moveComponent',
+        params,
+      })),
+      moveGroup: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.moveGroup',
+        params,
+      })),
+      netStatus: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.netStatus',
+        params,
+      })),
+      ripupNet: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.ripupNet',
+        params,
+      })),
+      routeNet: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.routeNet',
+        params,
+      })),
+      setComponentAttribute: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.setComponentAttribute',
+        params,
+      })),
+      setDesignRules: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.setDesignRules',
+        params,
+      })),
+      setDiffPair: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.setDiffPair',
+        params,
+      })),
+      setNetClass: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.setNetClass',
+        params,
+      })),
+      setNetRules: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.setNetRules',
+        params,
+      })),
+      setStackup: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'pcb.setStackup',
+        params,
+      })),
+      exportBom: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'export.bom',
+        params,
+      })),
+      exportStep: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'export.step',
+        params,
+      })),
+      schematicComponentReplace: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'schematic.componentReplace',
+        params,
+      })),
+      schematicDeleteWire: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'schematic.deleteWire',
+        params,
+      })),
+      schematicRenameNet: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'schematic.renameNet',
+        params,
+      })),
+      schematicSetNetLabel: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'schematic.setNetLabel',
+        params,
+      })),
+      schematicWiresAtPin: vi.fn(async (params: Record<string, unknown>) => ({
+        method: 'schematic.wiresAtPin',
+        params,
+      })),
     },
     pcbMutationOperations: {
       addZone: vi.fn(async (params: Record<string, unknown>) => ({ method: 'zone', params })),
@@ -211,30 +324,56 @@ const expectedMethods = [
   'design.drc',
   'design.erc',
   'design.ruleCheck',
+  'export.bom',
   'export.netlist',
   'export.pdf',
   'export.pickPlace',
+  'export.step',
   'inventory.getPrice',
   'inventory.search',
   'library.getDeviceByLcscId',
+  'pcb.addArc',
+  'pcb.addCopperPour',
+  'pcb.addHole',
+  'pcb.addKeepout',
   'pcb.addSilkscreenLine',
   'pcb.addText',
   'pcb.addTrack',
   'pcb.addVia',
+  'pcb.addVias',
   'pcb.addZone',
+  'pcb.componentBounds',
+  'pcb.connectivityCheck',
+  'pcb.copperIslands',
   'pcb.deleteComponent',
+  'pcb.deleteTracks',
   'pcb.exportRouteContext',
+  'pcb.getDesignRules',
   'pcb.listComponents',
   'pcb.listFills',
   'pcb.listRegions',
   'pcb.listTracks',
   'pcb.listVias',
   'pcb.modifyComponent',
+  'pcb.modifyVia',
+  'pcb.moveComponent',
+  'pcb.moveGroup',
+  'pcb.netStatus',
   'pcb.rebuildCopper',
+  'pcb.ripupNet',
+  'pcb.routeNet',
+  'pcb.setComponentAttribute',
+  'pcb.setDesignRules',
+  'pcb.setDiffPair',
+  'pcb.setNetClass',
+  'pcb.setNetRules',
+  'pcb.setStackup',
   'project.export',
   'project.open',
   'project.save',
+  'schematic.componentReplace',
   'schematic.deletePrimitive',
+  'schematic.deleteWire',
   'schematic.getNetDetail',
   'schematic.getPinNoConnect',
   'schematic.getPrimitiveSnapshot',
@@ -246,9 +385,12 @@ const expectedMethods = [
   'schematic.modifyPrimitive',
   'schematic.primitiveBounds',
   'schematic.recreatePrimitiveSnapshot',
+  'schematic.renameNet',
   'schematic.restorePrimitiveSnapshot',
   'schematic.searchDevice',
+  'schematic.setNetLabel',
   'schematic.validateNetlist',
+  'schematic.wiresAtPin',
   'system.apiInventory',
   'system.getStatus',
   'system.inspectComponents',
@@ -260,6 +402,28 @@ describe('createDispatcherDomainRouter', () => {
     const router = createDispatcherDomainRouter(createDependencies());
     expect(router.methodList).toEqual(expectedMethods);
     expect(router.methodList).toEqual([...router.methodList].sort());
+  });
+
+  it('runs the expected-board guard for pcb.* calls that carry expect', async () => {
+    const dependencies = createDependencies();
+    const router = createDispatcherDomainRouter(dependencies);
+    const expect_ = { projectId: 'proj', boardName: 'Transceiver_V2' };
+
+    await router.tryDispatch('pcb.addTrack', { expect: expect_ });
+    await router.tryDispatch('pcb.moveComponent', { expect: expect_, primitiveId: 'c1' });
+    expect(dependencies.pcbAgenticOperations.requireExpectedBoard).toHaveBeenCalledTimes(2);
+
+    await router.tryDispatch('pcb.addTrack', {});
+    await router.tryDispatch('schematic.deleteWire', { expect: expect_ });
+    expect(dependencies.pcbAgenticOperations.requireExpectedBoard).toHaveBeenCalledTimes(2);
+
+    dependencies.pcbAgenticOperations.requireExpectedBoard.mockRejectedValueOnce(
+      new Error('WRONG_DOCUMENT'),
+    );
+    await expect(router.tryDispatch('pcb.addVia', { expect: expect_ })).rejects.toThrow(
+      'WRONG_DOCUMENT',
+    );
+    expect(dependencies.pcbWriteOperations.addVia).not.toHaveBeenCalled();
   });
 
   it('delegates exact methods without changing parameters or results', async () => {

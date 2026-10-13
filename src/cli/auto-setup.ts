@@ -33,15 +33,21 @@ function logError(message: string, err?: unknown): void {
 
 // ── Server entry builder ────────────────────────────────────
 
+export const DEFAULT_SETUP_PROFILE = 'full';
+export const DEFAULT_BRIDGE_PORT = '49620';
+
+function serverEnv(profile: string): Record<string, string> {
+  return { TOOL_PROFILE: profile, BRIDGE_PORT: DEFAULT_BRIDGE_PORT };
+}
+
 function buildServerEntry(profile: string, client: ClientDefinition): Record<string, unknown> {
   const base: Record<string, unknown> = {
     command: NPX_COMMAND,
     args: [...NPX_ARGS],
   };
 
-  if (profile !== 'core') {
-    base.env = { TOOL_PROFILE: profile };
-  }
+  // ponytail: always pin the profile and port so every client lands on the same bridge listener.
+  base.env = serverEnv(profile);
 
   // Cline has extra fields
   if (client.name === 'cline') {
@@ -55,7 +61,7 @@ function buildServerEntry(profile: string, client: ClientDefinition): Record<str
       command: {
         path: NPX_COMMAND,
         args: [...NPX_ARGS],
-        env: profile !== 'core' ? { TOOL_PROFILE: profile } : undefined,
+        env: serverEnv(profile),
       },
       settings: {},
     };
@@ -169,7 +175,7 @@ function setupClient(client: ClientDefinition, profile: string): string[] {
 // ── Public: run setup command ───────────────────────────────
 
 export function runSetup(options: SetupOptions): string {
-  const profile = options.profile ?? 'core';
+  const profile = options.profile ?? DEFAULT_SETUP_PROFILE;
   const clientName = options.client ?? 'list';
 
   if (clientName === 'list') {

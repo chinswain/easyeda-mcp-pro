@@ -84,6 +84,36 @@ describe('gatherLivePlacementCheck', () => {
     expect(result.conflicts.some((c) => c.regionId === 'existing:blocker')).toBe(true);
   });
 
+  it('rejects a candidate that overlaps free text', async () => {
+    bridgeCall.mockImplementation(async (method: string, params: any) => {
+      if (method === 'schematic.getSheetInfo') return RAW_SHEET_INFO;
+      if (method === 'schematic.listComponents') return { total: 0, items: [] };
+      if (method === 'schematic.listPrimitiveIds') {
+        return { primitiveIds: params.primitiveKind === 'text' ? ['note1'] : [] };
+      }
+      if (method === 'schematic.primitiveBounds') {
+        return {
+          items: params.primitiveIds.includes('note1')
+            ? [{ primitiveId: 'note1', bounds: { minX: 100, maxX: 160, minY: -210, maxY: -195 } }]
+            : [],
+          combined: null,
+        };
+      }
+      return undefined;
+    });
+
+    const result = await gatherLivePlacementCheck(makeCtx(bridgeCall), 'proj-1', {
+      width: 50,
+      height: 30,
+      x: 100,
+      y: -200,
+    });
+
+    if (result.mode !== 'check-placement') throw new Error('unreachable');
+    expect(result.accepted).toBe(false);
+    expect(result.conflicts.some((c) => c.regionId === 'existing:note1')).toBe(true);
+  });
+
   it('excludes a primitiveId from the occupied-region set', async () => {
     bridgeCall.mockImplementation(async (method: string) => {
       if (method === 'schematic.getSheetInfo') return RAW_SHEET_INFO;

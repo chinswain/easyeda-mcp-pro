@@ -2,6 +2,7 @@ import type { BoardInspectionOperations } from './board-inspection.js';
 import type { CanvasOperations } from './canvas-operations.js';
 import type { DesignRuleCheckOperations } from './design-rule-check-operations.js';
 import type { ExportOperations } from './export-operations.js';
+import type { PcbAgenticOperations } from './pcb-agentic-operations.js';
 import type { PcbMutationOperations } from './pcb-mutation-operations.js';
 import type { PcbReadOperations } from './pcb-read-operations.js';
 import type { PcbWriteOperations } from './pcb-write-operations.js';
@@ -23,6 +24,7 @@ export interface DispatcherDomainRouterDependencies {
   pcbWriteOperations: PcbWriteOperations;
   pcbMutationOperations: PcbMutationOperations;
   pcbReadOperations: PcbReadOperations;
+  pcbAgenticOperations: PcbAgenticOperations;
 }
 
 export type DispatcherDomainRouteResult = { handled: false } | { handled: true; value: unknown };
@@ -111,7 +113,117 @@ export function createDispatcherDomainRouter(
       method: 'pcb.addTrack',
       handle: (params) => dependencies.pcbWriteOperations.addTrack(params),
     },
+    {
+      method: 'pcb.addCopperPour',
+      handle: (params) => dependencies.pcbAgenticOperations.addCopperPour(params),
+    },
+    {
+      method: 'pcb.addKeepout',
+      handle: (params) => dependencies.pcbAgenticOperations.addKeepout(params),
+    },
+    {
+      method: 'pcb.addVias',
+      handle: (params) => dependencies.pcbAgenticOperations.addVias(params),
+    },
+    {
+      method: 'pcb.componentBounds',
+      handle: (params) => dependencies.pcbAgenticOperations.componentBounds(params),
+    },
+    {
+      method: 'pcb.connectivityCheck',
+      handle: () => dependencies.pcbAgenticOperations.connectivityCheck(),
+    },
+    {
+      method: 'pcb.copperIslands',
+      handle: (params) => dependencies.pcbAgenticOperations.copperIslands(params),
+    },
+    {
+      method: 'pcb.deleteTracks',
+      handle: (params) => dependencies.pcbAgenticOperations.deleteTracks(params),
+    },
+    {
+      method: 'pcb.getDesignRules',
+      handle: () => dependencies.pcbAgenticOperations.getDesignRules(),
+    },
+    {
+      method: 'pcb.moveComponent',
+      handle: (params) => dependencies.pcbAgenticOperations.moveComponent(params),
+    },
+    {
+      method: 'pcb.moveGroup',
+      handle: (params) => dependencies.pcbAgenticOperations.moveGroup(params),
+    },
+    {
+      method: 'pcb.netStatus',
+      handle: (params) => dependencies.pcbAgenticOperations.netStatus(params),
+    },
+    {
+      method: 'pcb.ripupNet',
+      handle: (params) => dependencies.pcbAgenticOperations.ripupNet(params),
+    },
+    {
+      method: 'pcb.routeNet',
+      handle: (params) => dependencies.pcbAgenticOperations.routeNet(params),
+    },
+    {
+      method: 'pcb.setComponentAttribute',
+      handle: (params) => dependencies.pcbAgenticOperations.setComponentAttribute(params),
+    },
+    {
+      method: 'pcb.setDesignRules',
+      handle: (params) => dependencies.pcbAgenticOperations.setDesignRules(params),
+    },
+    {
+      method: 'pcb.setDiffPair',
+      handle: (params) => dependencies.pcbAgenticOperations.setDiffPair(params),
+    },
+    {
+      method: 'pcb.setNetClass',
+      handle: (params) => dependencies.pcbAgenticOperations.setNetClass(params),
+    },
+    {
+      method: 'pcb.setNetRules',
+      handle: (params) => dependencies.pcbAgenticOperations.setNetRules(params),
+    },
+    {
+      method: 'pcb.setStackup',
+      handle: (params) => dependencies.pcbAgenticOperations.setStackup(params),
+    },
+    {
+      method: 'export.bom',
+      handle: (params) => dependencies.pcbAgenticOperations.exportBom(params),
+    },
+    {
+      method: 'export.step',
+      handle: (params) => dependencies.pcbAgenticOperations.exportStep(params),
+    },
+    {
+      method: 'schematic.componentReplace',
+      handle: (params) => dependencies.pcbAgenticOperations.schematicComponentReplace(params),
+    },
+    {
+      method: 'schematic.deleteWire',
+      handle: (params) => dependencies.pcbAgenticOperations.schematicDeleteWire(params),
+    },
+    {
+      method: 'schematic.renameNet',
+      handle: (params) => dependencies.pcbAgenticOperations.schematicRenameNet(params),
+    },
+    {
+      method: 'schematic.setNetLabel',
+      handle: (params) => dependencies.pcbAgenticOperations.schematicSetNetLabel(params),
+    },
+    {
+      method: 'schematic.wiresAtPin',
+      handle: (params) => dependencies.pcbAgenticOperations.schematicWiresAtPin(params),
+    },
     { method: 'pcb.addVia', handle: (params) => dependencies.pcbWriteOperations.addVia(params) },
+    {
+      method: 'pcb.modifyVia',
+      handle: (params) => dependencies.pcbWriteOperations.modifyVia(params),
+    },
+    { method: 'pcb.addArc', handle: (params) => dependencies.pcbWriteOperations.addArc(params) },
+    { method: 'pcb.addHole', handle: (params) => dependencies.pcbWriteOperations.addHole(params) },
     {
       method: 'pcb.addZone',
       handle: (params) => dependencies.pcbMutationOperations.addZone(params),
@@ -244,6 +356,10 @@ export function createDispatcherDomainRouter(
       const route = routes.find((candidate) => candidate.method === method);
       if (!route) return { handled: false };
       assertRouterSchematicScope(method, params);
+      // Section 3 guard: any pcb.* call carrying `expect` must match the focused board.
+      if (method.startsWith('pcb.') && params.expect) {
+        await dependencies.pcbAgenticOperations.requireExpectedBoard(params);
+      }
       return { handled: true, value: await route.handle(params) };
     },
   };

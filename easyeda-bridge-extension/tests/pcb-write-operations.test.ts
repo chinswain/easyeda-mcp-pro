@@ -25,6 +25,152 @@ function makeOperations() {
 }
 
 describe('PCB write operations', () => {
+  it('modifyVia recreates the via when it moves and reports verified read-back', async () => {
+    const { callFirst, operations } = makeOperations();
+    const states = [
+      { state: { Net: 'GND', X: 100, Y: 100, HoleDiameter: 12, Diameter: 24 } },
+      { state: { Net: 'GND', X: 300, Y: 320, HoleDiameter: 12, Diameter: 30 } },
+    ];
+    callFirst.mockImplementation(async (paths: unknown) => {
+      const p = (paths as string[])[0];
+      if (p.endsWith('.get')) return states.shift();
+      if (p.endsWith('.create')) return { primitiveId: 'via-new' };
+      return true;
+    });
+
+    await expect(
+      operations.modifyVia({ primitiveId: 'via-old', x: 300, y: 320, outerDiameter: 30 }),
+    ).resolves.toMatchObject({
+      primitiveId: 'via-new',
+      previousPrimitiveId: 'via-old',
+      recreated: true,
+      verified: true,
+    });
+    const calls = callFirst.mock.calls.map((c) => (c[0] as string[])[0]);
+    expect(calls).toEqual([
+      'PCB_PrimitiveVia.get',
+      'PCB_PrimitiveVia.delete',
+      'PCB_PrimitiveVia.create',
+      'PCB_PrimitiveVia.get',
+    ]);
+    expect(callFirst.mock.calls[2].slice(1)).toEqual([
+      'GND',
+      300,
+      320,
+      12,
+      30,
+      0,
+      '',
+      false,
+      undefined,
+    ]);
+  });
+
+  it('modifyVia uses native modify for size-only edits and flags mismatched read-back', async () => {
+    const { callFirst, operations } = makeOperations();
+    callFirst.mockImplementation(async (paths: unknown) => {
+      const p = (paths as string[])[0];
+      if (p.endsWith('.get'))
+        return {
+          getState_Net: () => 'GND',
+          getState_X: () => 1,
+          getState_Y: () => 2,
+          getState_HoleDiameter: () => 12,
+          getState_Diameter: () => 24,
+        };
+      return true;
+    });
+
+    await expect(
+      operations.modifyVia({ primitiveId: 'v', outerDiameter: 30 }),
+    ).resolves.toMatchObject({
+      primitiveId: 'v',
+      recreated: false,
+      verified: false,
+      expected: { diameter: 30 },
+      actual: { diameter: 24 },
+    });
+    expect(callFirst.mock.calls[1][0]).toEqual([
+      'PCB_PrimitiveVia.modify',
+      'pcb_PrimitiveVia.modify',
+    ]);
+    expect(callFirst.mock.calls[1].slice(1)).toEqual([
+      'v',
+      { net: 'GND', holeDiameter: 12, diameter: 30 },
+    ]);
+  });
+
+  it('modifyVia refuses unknown ids without writing', async () => {
+    const { callFirst, operations } = makeOperations();
+    callFirst.mockResolvedValue(null);
+    await expect(operations.modifyVia({ primitiveId: 'nope', x: 1 })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    expect(callFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it('addArc emits chord lines on the board outline layer', async () => {
+    const { callFirst, operations } = makeOperations();
+    const result = (await operations.addArc({
+      cx: 0,
+      cy: 0,
+      radius: 100,
+      startAngle: 0,
+      endAngle: 90,
+    })) as {
+      primitiveIds: string[];
+      segments: number;
+      approximated: boolean;
+    };
+    expect(result.segments).toBe(9);
+    expect(result.primitiveIds).toHaveLength(9);
+    expect(result.approximated).toBe(true);
+    const first = callFirst.mock.calls[0];
+    expect(first[0]).toEqual(['PCB_PrimitiveLine.create', 'pcb_PrimitiveLine.create']);
+    expect(first.slice(1, 5)).toEqual(['', 11, 100, 0]);
+    const last = callFirst.mock.calls[8];
+    expect(last[5] as number).toBeCloseTo(0, 6);
+    expect(last[6] as number).toBeCloseTo(100, 6);
+  });
+
+  it('addHole creates an unplated Multi-Layer pad with the decoded signature', async () => {
+    const { callFirst, operations } = makeOperations();
+    await operations.addHole({ x: 400, y: 400, holeDiameter: 126, padDiameter: 252, name: 'H1' });
+    expect(callFirst).toHaveBeenCalledWith(
+      ['PCB_PrimitivePad.create', 'pcb_PrimitivePad.create'],
+      12,
+      'H1',
+      400,
+      400,
+      0,
+      ['ELLIPSE', 252, 252],
+      '',
+      ['ROUND', 126],
+      0,
+      0,
+      0,
+      false,
+    );
+    await operations.addHole({ x: 1, y: 2, holeDiameter: 40, plated: true, netName: 'GND' });
+    expect(callFirst.mock.calls[1].slice(1)).toEqual([
+      12,
+      'H',
+      1,
+      2,
+      0,
+      ['ELLIPSE', 40, 40],
+      'GND',
+      ['ROUND', 40],
+      0,
+      0,
+      0,
+      true,
+    ]);
+    await expect(
+      operations.addHole({ x: 1, y: 2, holeDiameter: 40, padDiameter: 20 }),
+    ).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
+  });
+
   it('rejects missing or undersized track point arrays before native calls', async () => {
     const { callFirst, operations } = makeOperations();
 

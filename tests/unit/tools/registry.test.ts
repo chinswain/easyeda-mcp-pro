@@ -1,10 +1,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { Client } from '@modelcontextprotocol/client';
 import { InMemoryTransport, McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import {
   ToolRegistry,
   ErrorCodes,
+  RESULT_SPILL_BYTES,
   remoteRiskForTool,
   sideEffectForTool,
 } from '../../../src/tools/registry.js';
@@ -102,6 +106,53 @@ describe('ToolRegistry', () => {
   beforeEach(() => {
     registry = new ToolRegistry();
     resetGlobalMetricsCollector();
+  });
+
+  describe('oversized results', () => {
+    it('spills results above the byte threshold to a file and returns a summary', async () => {
+      const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyeda-spill-'));
+      const items = Array.from({ length: 800 }, (_, i) => ({
+        id: `item-${i}`,
+        value: 'x'.repeat(20),
+      }));
+      registry.register(
+        createMockTool('big_tool', 'core', {
+          outputSchema: z.object({
+            items: z.array(z.object({ id: z.string(), value: z.string() })),
+            total: z.number(),
+          }),
+          handler: async () => ({ items, total: items.length }),
+        }),
+      );
+      const { server, handlers } = mockMcpServer();
+      registry.registerAllOnServer(
+        server as any,
+        mockContext({ config: { bridgeTimeoutMs: 1000, artifactDir } }),
+      );
+      const response = await handlers.get('big_tool')!({});
+
+      expect(response.structuredContent).toMatchObject({ total: 800 });
+      const summary = JSON.parse(response.content[0].text);
+      expect(summary).toMatchObject({
+        spilled_to_file: true,
+        tool: 'big_tool',
+        summary: { items: { count: 800 }, total: 800 },
+      });
+      const spilledPath = summary.path as string;
+      expect(spilledPath.startsWith(path.resolve(artifactDir))).toBe(true);
+      expect(JSON.parse(fs.readFileSync(spilledPath, 'utf8'))).toMatchObject({ total: 800 });
+      expect(response.content[0].text.length).toBeLessThan(RESULT_SPILL_BYTES);
+    });
+
+    it('returns small results inline', async () => {
+      registry.register(
+        createMockTool('small_tool', 'core', { handler: async () => ({ ok: true }) }),
+      );
+      const { server, handlers } = mockMcpServer();
+      registry.registerAllOnServer(server as any, mockContext());
+      const response = await handlers.get('small_tool')!({});
+      expect(response.structuredContent).toEqual({ ok: true });
+    });
   });
 
   describe('basic operations', () => {
@@ -679,6 +730,8 @@ describe('ToolRegistry', () => {
           'export',
           'pcb-constraints',
           'pcb-write',
+          'pcb-read',
+          'schematic-write',
           'visual',
           'catalog',
           'design-rules',
@@ -772,20 +825,42 @@ describe('ToolRegistry', () => {
 
       expect(highRiskTools.map((tool) => tool.name)).toEqual([
         'easyeda_api_call',
+        'easyeda_pcb_add_arc',
+        'easyeda_pcb_add_copper_pour',
+        'easyeda_pcb_add_hole',
+        'easyeda_pcb_add_keepout',
         'easyeda_pcb_add_region',
         'easyeda_pcb_add_track',
         'easyeda_pcb_add_via',
+        'easyeda_pcb_add_via_fence',
         'easyeda_pcb_add_zone',
         'easyeda_pcb_autoroute',
         'easyeda_pcb_delete_component',
+        'easyeda_pcb_delete_tracks',
         'easyeda_pcb_floorplan',
         'easyeda_pcb_modify_component',
+        'easyeda_pcb_modify_via',
+        'easyeda_pcb_move_component',
+        'easyeda_pcb_move_group',
         'easyeda_pcb_place_component',
         'easyeda_pcb_place_component_group',
         'easyeda_pcb_rebuild_copper',
+        'easyeda_pcb_ripup_net',
+        'easyeda_pcb_route_diff_pair',
+        'easyeda_pcb_route_net',
         'easyeda_pcb_route_path_plan',
+        'easyeda_pcb_set_component_attribute',
+        'easyeda_pcb_set_design_rules',
+        'easyeda_pcb_set_diff_pair',
+        'easyeda_pcb_set_net_class',
+        'easyeda_pcb_set_stackup',
+        'easyeda_pcb_stitch_region',
         'easyeda_schematic_batch_write',
+        'easyeda_schematic_component_replace',
+        'easyeda_schematic_delete_wire',
         'easyeda_schematic_layout_autofix_apply',
+        'easyeda_schematic_rename_net',
+        'easyeda_schematic_set_net_label',
       ]);
 
       for (const tool of highRiskTools) {

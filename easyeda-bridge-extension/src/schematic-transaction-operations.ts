@@ -244,31 +244,6 @@ export function createSchematicTransactionOperations(
     return dependencies.getCachedTextAlignMode(primitiveId);
   }
 
-  async function applyNetFlagState(
-    current: unknown,
-    primitiveId: string,
-    property: Record<string, unknown>,
-  ): Promise<unknown> {
-    const c = current as Record<string, (arg?: unknown) => unknown>;
-    const applied: Record<string, unknown> = {};
-    const setIf = (key: string, setter: string) => {
-      const v = property[key];
-      if (v !== undefined && typeof c[setter] === 'function') {
-        c[setter](v);
-        applied[key] = v;
-      }
-    };
-    setIf('x', 'setState_X');
-    setIf('y', 'setState_Y');
-    setIf('rotation', 'setState_Rotation');
-    setIf('mirror', 'setState_Mirror');
-    setIf('net', 'setState_Net');
-    if (typeof c.done === 'function') {
-      await c.done();
-    }
-    return { primitiveId, componentType: readComponentType(current), applied };
-  }
-
   async function readPrimitiveFromClass(
     paths: string[],
     primitiveId: string,
@@ -368,6 +343,11 @@ export function createSchematicTransactionOperations(
         rotation: safeGetState(current, 'Rotation'),
         mirror: safeGetState(current, 'Mirror'),
         net: safeGetState(current, 'Net'),
+        // Library symbol name is "<Identification>-<net>", e.g. "Power-5V", "Ground-GND".
+        identification:
+          String(
+            (safeGetState(current, 'Component') as { name?: unknown } | undefined)?.name ?? '',
+          ).split('-')[0] || undefined,
       });
     }
     return compactDefinedRecord({
@@ -406,7 +386,7 @@ export function createSchematicTransactionOperations(
       primitiveId,
       primitiveKind: 'wire',
       property: compactDefinedRecord({
-        line: safeGetState(current, 'Line'),
+        line: storedWireSegments(safeGetState(current, 'Line')),
         net: safeGetState(current, 'Net'),
         color: safeGetState(current, 'Color'),
         lineWidth: safeGetState(current, 'LineWidth'),
@@ -418,7 +398,7 @@ export function createSchematicTransactionOperations(
   function textSnapshot(
     primitiveId: string,
     text: TextPrimitiveRead,
-    alignMode: PublicTextAlignMode,
+    alignMode: PublicTextAlignMode | undefined,
   ): SchematicPrimitiveSnapshot {
     return {
       schemaVersion: 'schematic-primitive-snapshot/v1',
@@ -516,19 +496,16 @@ export function createSchematicTransactionOperations(
   async function readTextSnapshot(primitiveId: string): Promise<TextSnapshotRead> {
     const text = await readTextPrimitiveFromClass(TEXT_CLASS_PATHS, primitiveId);
     if (!text) return { candidateFound: false };
+    // alignMode may be null on texts an earlier bridge corrupted; snapshot them without it.
+    // A wrapper with neither alignMode nor content is another primitive sharing the ID.
     const alignMode = resolvePublicTextAlignMode(text, primitiveId);
     return {
       candidateFound: true,
-      snapshot: alignMode === undefined ? undefined : textSnapshot(primitiveId, text, alignMode),
+      snapshot:
+        alignMode === undefined && readTextState(text, 'Content') === undefined
+          ? undefined
+          : textSnapshot(primitiveId, text, alignMode),
     };
-  }
-
-  function throwUnsupportedTextSnapshot(primitiveId: string): never {
-    throw newBridgeError(
-      'UNSUPPORTED_RUNTIME',
-      `Text ${primitiveId} did not expose a public alignMode`,
-      'Retry after reloading the document. Exact text rollback requires a documented ESCH_PrimitiveTextAlignMode value from 1 through 9.',
-    );
   }
 
   async function readSnapshotByKind(
@@ -543,9 +520,7 @@ export function createSchematicTransactionOperations(
       case 'wire':
         return readClassSnapshot(primitiveId, WIRE_CLASS_PATHS, wireSnapshot);
       case 'text': {
-        const text = await readTextSnapshot(primitiveId);
-        if (text.candidateFound && !text.snapshot) throwUnsupportedTextSnapshot(primitiveId);
-        return text.snapshot ?? null;
+        return (await readTextSnapshot(primitiveId)).snapshot ?? null;
       }
       case 'rectangle':
         return readClassSnapshot(primitiveId, RECTANGLE_CLASS_PATHS, rectangleSnapshot);
@@ -576,7 +551,6 @@ export function createSchematicTransactionOperations(
     if (circle) return circle;
     const polygon = await readClassSnapshot(primitiveId, POLYGON_CLASS_PATHS, polygonSnapshot);
     if (polygon) return polygon;
-    if (text.candidateFound) throwUnsupportedTextSnapshot(primitiveId);
     return null;
   }
 
@@ -945,7 +919,12 @@ export function createSchematicTransactionOperations(
 
     const componentType = readComponentType(current);
     if (componentType === 'netflag' || componentType === 'netport') {
-      return handled(await applyNetFlagState(current, primitiveId, property));
+      // Native done() on a net flag/port always clears its net (verified live), so in-place edits corrupt it.
+      throw newBridgeError(
+        'UNSUPPORTED_RUNTIME',
+        `Net ${componentType === 'netflag' ? 'flag' : 'port'} ${primitiveId} cannot be modified in place: EasyEDA clears its net`,
+        'Delete it and create a new one with the wanted net/position (batch_write: delete op + create netflag/netport op).',
+      );
     }
 
     const { merged, oldX, oldY } = componentModificationProperties(current, property);
@@ -977,29 +956,43 @@ export function createSchematicTransactionOperations(
     const current = await readModificationCurrent(primitiveClass, primitiveId, 'SCH_PrimitiveWire');
     if (!current) return NOT_HANDLED;
 
-    return handled(
-      await primitiveClass.modify(primitiveId, {
-        line: safeGetState(current, 'Line'),
-        net: safeGetState(current, 'Net'),
-        color: safeGetState(current, 'Color'),
-        lineWidth: safeGetState(current, 'LineWidth'),
-        lineType: safeGetState(current, 'LineType'),
-        ...property,
-      }),
-    );
+    const result = await primitiveClass.modify(primitiveId, {
+      // A flat line is read as a polyline, so the stored segment list goes back nested.
+      line: storedWireSegments(safeGetState(current, 'Line')),
+      net: safeGetState(current, 'Net'),
+      color: safeGetState(current, 'Color'),
+      lineWidth: safeGetState(current, 'LineWidth'),
+      lineType: safeGetState(current, 'LineType'),
+      ...property,
+    });
+    if (property.line !== undefined) {
+      // EasyEDA can report success on a multi-segment wire and keep the old line. Modify is
+      // also applied asynchronously, so poll the read-back briefly.
+      const wanted = JSON.stringify(wireSegments(property.line, false));
+      let kept = '';
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        kept = JSON.stringify(
+          storedWireSegments(safeGetState(await primitiveClass.get(primitiveId), 'Line')),
+        );
+        if (kept === wanted) return handled(result);
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      }
+      throw new Error(
+        `Wire ${primitiveId} line change did not take; EasyEDA kept ${kept}. Delete the wire and draw the new path.`,
+      );
+    }
+    return handled(result);
   }
 
   function textModificationProperties(
     text: TextPrimitiveRead,
     property: Record<string, unknown>,
-    alignMode: PublicTextAlignMode,
   ): Record<string, unknown> {
     const incoming: Record<string, unknown> = { ...property };
     if (incoming.color !== undefined) incoming.textColor = incoming.color;
     if (incoming.underline !== undefined) incoming.underLine = incoming.underline;
     delete incoming.color;
     delete incoming.underline;
-    incoming.alignMode = alignMode;
 
     return {
       x: readTextState(text, 'X'),
@@ -1026,26 +1019,28 @@ export function createSchematicTransactionOperations(
     const text = await readTextPrimitiveFromClass(TEXT_CLASS_PATHS, primitiveId);
     if (!text) return NOT_HANDLED;
 
-    let requestedAlignMode: PublicTextAlignMode | undefined;
-    if (Object.prototype.hasOwnProperty.call(property, 'alignMode')) {
-      requestedAlignMode = requirePublicTextAlignMode(property.alignMode);
-    }
-    const alignMode = requestedAlignMode ?? resolvePublicTextAlignMode(text, primitiveId);
-    if (alignMode === undefined) {
+    // Native modify scrambles any alignMode it is given (1->5, 2->9, others->null, not even
+    // deterministic; verified live) but keeps it when omitted. An unchanged alignMode (rollback
+    // snapshots) is dropped; a real change is refused.
+    const { alignMode: requestedAlignMode, ...rest } = property;
+    if (
+      requestedAlignMode !== undefined &&
+      requirePublicTextAlignMode(requestedAlignMode) !==
+        resolvePublicTextAlignMode(text, primitiveId)
+    ) {
       throw newBridgeError(
         'UNSUPPORTED_RUNTIME',
-        `Text ${primitiveId} did not expose a public alignMode`,
-        'Read the text after reloading the document, or provide alignMode explicitly using a value from 1 through 9.',
+        `Text ${primitiveId} alignMode cannot be changed in place: EasyEDA modify corrupts it`,
+        'Delete the text and create a new one with the wanted alignMode.',
       );
     }
 
-    const result = await primitiveClass.modify(
+    const modified = await primitiveClass.modify(
       primitiveId,
-      textModificationProperties(text, property, alignMode),
+      textModificationProperties(text, rest),
     );
-    const resultAlignMode = asPublicTextAlignMode(safeGetState(result, 'AlignMode'));
-    dependencies.setCachedTextAlignMode(primitiveId, resultAlignMode ?? alignMode);
-    return handled(result);
+    // modify()'s return has Y negated (verified live); a fresh read is correct.
+    return handled((await readTextPrimitiveFromClass(TEXT_CLASS_PATHS, primitiveId)) ?? modified);
   }
 
   async function tryModifyCircle(
@@ -1150,4 +1145,28 @@ export function createSchematicTransactionOperations(
     restorePrimitiveSnapshot,
     modifyPrimitive,
   };
+}
+
+/** EasyEDA stores a wire as a flat list of segments (x1,y1,x2,y2 each, in any order and
+ *  direction). Canonical form: nested segments, endpoints and segments sorted. */
+export function storedWireSegments(line: unknown): number[][] {
+  return wireSegments(line, true);
+}
+
+/** Nested arrays are polylines each; a flat array is a polyline, or a segment list when stored. */
+export function wireSegments(line: unknown, stored: boolean): number[][] {
+  if (!Array.isArray(line)) return [];
+  const nested = line.some(Array.isArray);
+  const parts = nested ? line.filter(Array.isArray) : [line];
+  const segments: number[][] = [];
+  for (const part of parts) {
+    const nums = (part.flat(Infinity) as unknown[]).map(Number);
+    const step = stored && !nested ? 4 : 2;
+    for (let i = 0; i + 3 < nums.length; i += step) {
+      const [x1, y1, x2, y2] = nums.slice(i, i + 4) as [number, number, number, number];
+      if (x1 === x2 && y1 === y2) continue;
+      segments.push(x1 < x2 || (x1 === x2 && y1 < y2) ? [x1, y1, x2, y2] : [x2, y2, x1, y1]);
+    }
+  }
+  return segments.sort((a, b) => a.join(',').localeCompare(b.join(',')));
 }

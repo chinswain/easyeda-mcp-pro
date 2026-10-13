@@ -18,6 +18,7 @@ export interface SchematicSnapshotRecreator {
 
 const SUPPORTED_KINDS = Object.freeze([
   'circle',
+  'netflag',
   'polygon',
   'rectangle',
   'text',
@@ -73,7 +74,9 @@ export function createSchematicSnapshotRecreator(
           property.bold ?? false,
           property.italic ?? false,
           property.underline ?? false,
-          requirePublicTextAlignMode(property.alignMode, 'snapshot.property.alignMode'),
+          property.alignMode === undefined
+            ? undefined
+            : requirePublicTextAlignMode(property.alignMode, 'snapshot.property.alignMode'),
         );
       }
       case 'rectangle': {
@@ -114,8 +117,28 @@ export function createSchematicSnapshotRecreator(
           property.lineWidth ?? 1,
           property.lineType ?? 0,
         );
-      case 'component':
       case 'netflag':
+        if (
+          ['Power', 'Ground', 'AnalogGround', 'ProtectGround'].includes(
+            String(property.identification),
+          )
+        ) {
+          return callFirst(
+            ['SCH_PrimitiveComponent.createNetFlag', 'sch_PrimitiveComponent.createNetFlag'],
+            property.identification,
+            property.net,
+            requiredNumber(property, 'x'),
+            requiredNumber(property, 'y'),
+            property.rotation ?? 0,
+            property.mirror ?? false,
+          );
+        }
+        throw createBridgeError(
+          'UNSUPPORTED_RUNTIME',
+          `Net flag snapshot has no power identification (${String(property.identification)})`,
+          'Only Power/Ground/AnalogGround/ProtectGround flags can be recreated.',
+        );
+      case 'component':
       case 'netport':
         throw createBridgeError(
           'UNSUPPORTED_RUNTIME',

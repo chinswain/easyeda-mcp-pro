@@ -41,8 +41,9 @@ const OUTPUT_RE = /OUT/i;
 const CONTROL_SIGNAL_RE = /^n?(RST|RESET|EN|ENABLE|CE|CS|SHDN|WAKE|SLEEP)\b/i;
 const INPUT_HINT_RE = /IN/i;
 
+// Native "IN" is omitted: plain resistors and LEDs report it (verified live), so trusting it
+// turned every LED anode net into a floating input.
 const NATIVE_PIN_TYPE_MAP: Record<string, PinElectricalType> = {
-  IN: 'input',
   OUT: 'output',
   BI: 'bidirectional',
   BIDIRECTIONAL: 'bidirectional',

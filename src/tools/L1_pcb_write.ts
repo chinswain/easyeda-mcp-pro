@@ -1,4 +1,11 @@
 import { z } from 'zod';
+import { boardGuardOptInput, guardOf } from './agentic-common.js';
+import {
+  componentRefErrorFields,
+  componentRefInput,
+  componentRefRefine,
+  resolveComponentRef,
+} from './component-ref.js';
 import { type ToolDefinition, type ToolContext } from './types.js';
 import { type EnvConfig } from '../config/env.js';
 import {
@@ -958,6 +965,7 @@ function registerPcbWriteTools(
       y: z.number(),
       rotation: z.number().default(0),
       layer: z.number().default(1),
+      ...boardGuardOptInput,
       confirmWrite: z
         .literal(true)
         .describe('Must be the literal boolean true (not the string "true") to allow this write.'),
@@ -978,6 +986,34 @@ function registerPcbWriteTools(
         'easyeda_pcb_modify_component.',
     }),
   });
+
+  const writeMeta = {
+    profile: 'full' as const,
+    evidence: ['runtime-probe' as const],
+    risk: 'high' as const,
+    confirmWrite: true,
+    group: 'pcb-write',
+    version: '1.0.0',
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  };
+  const confirmWriteSchema = z
+    .literal(true)
+    .describe('Must be the literal boolean true (not the string "true") to allow this write.');
+  const writeErrorSchema = {
+    success: z.boolean(),
+    error: z.string().optional(),
+    error_code: z.string().optional(),
+    hint: z.string().optional(),
+  };
+  const writeFailure = (err: unknown) => {
+    const e = err as { message?: string; code?: string; suggestion?: string };
+    return {
+      success: false,
+      error: e?.message ?? String(err),
+      error_code: e?.code ?? 'BRIDGE_ERROR',
+      hint: e?.suggestion,
+    };
+  };
 
   registry.register({
     name: 'easyeda_pcb_add_region',
@@ -1024,6 +1060,7 @@ function registerPcbWriteTools(
       layer: z.number(),
       width: z.number(),
       netName: z.string().optional(),
+      ...boardGuardOptInput,
       confirmWrite: z
         .literal(true)
         .describe('Must be the literal boolean true (not the string "true") to allow this write.'),
@@ -1037,6 +1074,8 @@ function registerPcbWriteTools(
     handler: async (ctx: ToolContext, params: unknown) => {
       const p = params as {
         points: Array<{ x: number; y: number }>;
+        projectId?: string;
+        boardName?: string;
         layer: number;
         width: number;
         netName?: string;
@@ -1046,6 +1085,7 @@ function registerPcbWriteTools(
           Record<string, unknown>,
           { primitiveId?: string; primitiveIds?: string[] }
         >('pcb.addTrack', {
+          ...guardOf(p),
           points: p.points,
           layer: p.layer,
           width: p.width,
@@ -1073,36 +1113,29 @@ function registerPcbWriteTools(
       'are passed through to the native API unconverted (same native unit as x/y) — their ' +
       'real-world scale was not independently verified against a known physical dimension, so ' +
       'confirm the resulting via size visually before trusting it.',
-    profile: 'full',
-    evidence: ['runtime-probe'],
-    risk: 'high',
-    confirmWrite: true,
-    group: 'pcb-write',
-    version: '1.0.0',
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-    },
+    ...writeMeta,
     inputSchema: z.object({
       x: z.number(),
       y: z.number(),
       outerDiameter: z.number(),
       holeSize: z.number(),
       netName: z.string().optional(),
+      ...boardGuardOptInput,
       confirmWrite: z
         .literal(true)
         .describe('Must be the literal boolean true (not the string "true") to allow this write.'),
     }),
     outputSchema: z.object({
-      success: z.boolean(),
+      ...writeErrorSchema,
       primitiveId: z.string().optional(),
-      error: z.string().optional(),
     }),
     handler: async (ctx: ToolContext, params: unknown) => {
       const p = params as {
         x: number;
         y: number;
         outerDiameter: number;
+        projectId?: string;
+        boardName?: string;
         holeSize: number;
         netName?: string;
       };
@@ -1111,6 +1144,7 @@ function registerPcbWriteTools(
           Record<string, unknown>,
           { primitiveId?: string; result?: string }
         >('pcb.addVia', {
+          ...guardOf(p),
           x: p.x,
           y: p.y,
           outerDiameter: p.outerDiameter,
@@ -1194,6 +1228,134 @@ function registerPcbWriteTools(
     },
   });
 
+  registry.register({
+    name: 'easyeda_pcb_modify_via',
+    title: 'Modify PCB via',
+    description:
+      "Change a via's position, size or net. Position changes are applied as delete + recreate " +
+      '(native modify leaves the DRC index at the old position), so primitiveId changes: use the ' +
+      'returned primitiveId afterwards. Native units (mil). verified=true means the read-back matches.',
+    ...writeMeta,
+    inputSchema: z.object({
+      primitiveId: z.string(),
+      x: z.number().optional(),
+      y: z.number().optional(),
+      outerDiameter: z.number().optional(),
+      holeSize: z.number().optional(),
+      netName: z.string().optional(),
+      ...boardGuardOptInput,
+      confirmWrite: confirmWriteSchema,
+    }),
+    outputSchema: z.object({
+      ...writeErrorSchema,
+      primitiveId: z.string().optional(),
+      previousPrimitiveId: z.string().optional(),
+      recreated: z.boolean().optional(),
+      verified: z.boolean().optional(),
+      expected: z.record(z.string(), z.unknown()).optional(),
+      actual: z.record(z.string(), z.unknown()).optional(),
+    }),
+    handler: async (ctx: ToolContext, params: unknown) => {
+      const { confirmWrite: _c, projectId, boardName, ...p } = params as Record<string, unknown>;
+      const guard = guardOf({
+        projectId: projectId as string | undefined,
+        boardName: boardName as string | undefined,
+      });
+      try {
+        const data = await ctx.bridge.call<Record<string, unknown>, Record<string, unknown>>(
+          'pcb.modifyVia',
+          { ...p, ...guard },
+        );
+        return { success: data.verified === true, ...data };
+      } catch (err) {
+        return writeFailure(err);
+      }
+    },
+  });
+
+  registry.register({
+    name: 'easyeda_pcb_add_arc',
+    title: 'Add PCB arc (chord segments)',
+    description:
+      'Draw an arc on the Board Outline layer (default, layer 11) as short line segments. The native ' +
+      'PCB_PrimitiveArc.create never persists (known limitation), so the arc is approximated by ' +
+      'straight chords (<=10 degrees each). Angles in degrees CCW; cx/cy/radius in native units (mil).',
+    ...writeMeta,
+    inputSchema: z.object({
+      cx: z.number(),
+      cy: z.number(),
+      radius: z.number().positive(),
+      startAngle: z.number(),
+      endAngle: z.number(),
+      lineWidth: z.number().positive().optional(),
+      layer: z.number().int().optional(),
+      netName: z.string().optional(),
+      ...boardGuardOptInput,
+      confirmWrite: confirmWriteSchema,
+    }),
+    outputSchema: z.object({
+      ...writeErrorSchema,
+      primitiveId: z.string().optional(),
+      primitiveIds: z.array(z.string()).optional(),
+      segments: z.number().int().optional(),
+      approximated: z.boolean().optional(),
+    }),
+    handler: async (ctx: ToolContext, params: unknown) => {
+      const { confirmWrite: _c, projectId, boardName, ...p } = params as Record<string, unknown>;
+      const guard = guardOf({
+        projectId: projectId as string | undefined,
+        boardName: boardName as string | undefined,
+      });
+      try {
+        const data = await ctx.bridge.call<Record<string, unknown>, Record<string, unknown>>(
+          'pcb.addArc',
+          { ...p, ...guard },
+        );
+        return { success: true, ...data };
+      } catch (err) {
+        return writeFailure(err);
+      }
+    },
+  });
+
+  registry.register({
+    name: 'easyeda_pcb_add_hole',
+    title: 'Add mounting hole (NPTH/PTH pad)',
+    description:
+      'Place a real through-hole pad on the Multi-Layer: plated=false (default) gives a non-plated ' +
+      'mounting hole with no net; plated=true gives a PTH pad with optional netName. Sizes in native ' +
+      'units (mil). Prefer this over easyeda_pcb_add_via for mechanical holes.',
+    ...writeMeta,
+    inputSchema: z.object({
+      x: z.number(),
+      y: z.number(),
+      holeDiameter: z.number().positive(),
+      padDiameter: z.number().positive().optional(),
+      plated: z.boolean().default(false),
+      netName: z.string().optional(),
+      name: z.string().optional().describe('Pad number/name, e.g. H1'),
+      ...boardGuardOptInput,
+      confirmWrite: confirmWriteSchema,
+    }),
+    outputSchema: z.object({ ...writeErrorSchema, primitiveId: z.string().optional() }),
+    handler: async (ctx: ToolContext, params: unknown) => {
+      const { confirmWrite: _c, projectId, boardName, ...p } = params as Record<string, unknown>;
+      const guard = guardOf({
+        projectId: projectId as string | undefined,
+        boardName: boardName as string | undefined,
+      });
+      try {
+        const data = await ctx.bridge.call<
+          Record<string, unknown>,
+          { primitiveId?: string } | string
+        >('pcb.addHole', { ...p, ...guard });
+        return { success: true, primitiveId: typeof data === 'string' ? data : data?.primitiveId };
+      } catch (err) {
+        return writeFailure(err);
+      }
+    },
+  });
+
   registry.register(failClosedPcbZoneTool);
 
   registry.register({
@@ -1228,6 +1390,7 @@ function registerPcbWriteTools(
       expansion: z.number().optional(),
       mirror: z.boolean().optional(),
       locked: z.boolean().optional(),
+      ...boardGuardOptInput,
       confirmWrite: z
         .literal(true)
         .describe('Must be the literal boolean true (not the string "true") to allow this write.'),
@@ -1243,6 +1406,8 @@ function registerPcbWriteTools(
         x: number;
         y: number;
         text: string;
+        projectId?: string;
+        boardName?: string;
         fontFamily?: string;
         fontSize?: number;
         lineWidth?: number;
@@ -1258,6 +1423,7 @@ function registerPcbWriteTools(
           Record<string, unknown>,
           { primitiveId?: string; result?: string }
         >('pcb.addText', {
+          ...guardOf(p),
           layer: p.layer,
           x: p.x,
           y: p.y,
@@ -1305,12 +1471,18 @@ function registerPcbWriteTools(
       destructiveHint: false,
     },
     inputSchema: z.object({
-      layer: z.number().int().describe('Layer id, e.g. 3 = Top Silkscreen, 4 = Bottom Silkscreen'),
+      layer: z
+        .number()
+        .int()
+        .describe(
+          'Layer id, e.g. 3 = Top Silkscreen, 4 = Bottom Silkscreen, 11 = Board Outline (draw a closed loop to define the board)',
+        ),
       startX: z.number(),
       startY: z.number(),
       endX: z.number(),
       endY: z.number(),
       lineWidth: z.number().positive().optional(),
+      ...boardGuardOptInput,
       confirmWrite: z
         .literal(true)
         .describe('Must be the literal boolean true (not the string "true") to allow this write.'),
@@ -1324,6 +1496,8 @@ function registerPcbWriteTools(
       const p = params as {
         layer: number;
         startX: number;
+        projectId?: string;
+        boardName?: string;
         startY: number;
         endX: number;
         endY: number;
@@ -1334,6 +1508,7 @@ function registerPcbWriteTools(
           Record<string, unknown>,
           { primitiveId?: string; result?: string }
         >('pcb.addSilkscreenLine', {
+          ...guardOf(p),
           layer: p.layer,
           startX: p.startX,
           startY: p.startY,
@@ -1373,39 +1548,59 @@ function registerPcbWriteTools(
       readOnlyHint: false,
       destructiveHint: true,
     },
-    inputSchema: z.object({
-      primitiveIds: z.array(z.string()),
-      confirmWrite: z
-        .literal(true)
-        .describe('Must be the literal boolean true (not the string "true") to allow this write.'),
-    }),
+    inputSchema: z
+      .object({
+        primitiveIds: z.array(z.string()).default([]),
+        references: z
+          .array(z.string().trim().min(1))
+          .default([])
+          .describe('Component designators (U2, R36) to delete; resolved to primitiveIds first.'),
+        ...boardGuardOptInput,
+        confirmWrite: z
+          .literal(true)
+          .describe(
+            'Must be the literal boolean true (not the string "true") to allow this write.',
+          ),
+      })
+      .refine((v) => v.primitiveIds.length + v.references.length > 0, {
+        message: 'Provide primitiveIds and/or references.',
+      }),
     outputSchema: z.object({
       success: z.boolean(),
       deletedCount: z.number().optional(),
       deleted: z.array(z.string()).optional(),
       notFound: z.array(z.string()).optional(),
+      resolved: z.record(z.string(), z.string()).optional(),
       error: z.string().optional(),
+      error_code: z.string().optional(),
+      hint: z.string().optional(),
     }),
     handler: async (ctx: ToolContext, params: unknown) => {
-      const p = params as { primitiveIds: string[] };
+      const p = params as {
+        primitiveIds?: string[];
+        references?: string[];
+        projectId?: string;
+        boardName?: string;
+      };
+      const resolved: Record<string, string> = {};
       try {
+        for (const reference of p.references ?? []) {
+          resolved[reference] = await resolveComponentRef(ctx, 'pcb', { reference });
+        }
+        const primitiveIds = [...(p.primitiveIds ?? []), ...Object.values(resolved)];
         const result = await ctx.bridge.call<
           Record<string, unknown>,
           { success?: boolean; deletedCount?: number; deleted?: string[]; notFound?: string[] }
-        >('pcb.deleteComponent', {
-          primitiveIds: p.primitiveIds,
-        });
+        >('pcb.deleteComponent', { primitiveIds, ...guardOf(p) });
         return {
           success: result?.success ?? false,
           deletedCount: result?.deletedCount,
           deleted: result?.deleted,
           notFound: result?.notFound,
+          ...(p.references?.length ? { resolved } : {}),
         };
       } catch (err) {
-        return {
-          success: false,
-          error: err instanceof Error ? err.message : String(err),
-        };
+        return { success: false, ...componentRefErrorFields(err) };
       }
     },
   });
@@ -1427,7 +1622,7 @@ function registerPcbWriteTools(
   });
   const pcbComponentTransformInputSchema = z
     .object({
-      primitiveId: z.string().min(1),
+      ...componentRefInput,
       mode: z.enum(['preview', 'apply']).default('preview'),
       side: z.enum(['top', 'bottom']).optional(),
       xMil: z.number().finite().optional().describe('Absolute native PCB X coordinate in mils.'),
@@ -1447,7 +1642,8 @@ function registerPcbWriteTools(
         value.yMil !== undefined ||
         value.rotationDeg !== undefined,
       { message: 'At least one of side, xMil, yMil, or rotationDeg is required.' },
-    );
+    )
+    .refine(...componentRefRefine);
   const pcbComponentTransformOutputSchema = z.object({
     success: z.boolean(),
     primitive_id: z.string(),
@@ -1491,7 +1687,19 @@ function registerPcbWriteTools(
     outputSchema: pcbComponentTransformOutputSchema,
     handler: async (ctx: ToolContext, params: unknown) => {
       const parsed = pcbComponentTransformInputSchema.parse(params);
-      return handlePcbComponentTransform(ctx, parsed);
+      let primitiveId: string;
+      try {
+        primitiveId = await resolveComponentRef(ctx, 'pcb', parsed);
+      } catch (err) {
+        return {
+          success: false,
+          primitive_id: parsed.reference ?? '',
+          mode: parsed.mode,
+          applied: false,
+          ...componentRefErrorFields(err),
+        };
+      }
+      return handlePcbComponentTransform(ctx, { ...parsed, primitiveId });
     },
   });
 }

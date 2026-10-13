@@ -55,6 +55,44 @@ describe('design rule-check operations', () => {
     expect(callFirst).toHaveBeenCalledWith(['PCB_Drc.check'], true, true, true);
   });
 
+  it('keeps rule ids, primitive ids, pins, nets and page on each leaf', async () => {
+    const { operations, callFirst } = createSubject();
+    callFirst.mockResolvedValue([
+      {
+        name: 'Clearance',
+        count: 1,
+        list: [
+          {
+            ruleId: 'clearance',
+            ruleName: 'Clearance',
+            message: 'Track too close to pad',
+            severity: 'error',
+            primitiveIds: ['e12', 'e34'],
+            nets: ['GND', 'USB_DP'],
+            pins: ['U2.5'],
+            page: 'page-1',
+            position: { x: 1, y: 2, layer: 'BottomLayer' },
+          },
+        ],
+      },
+    ]);
+
+    await expect(operations.runDrc()).resolves.toMatchObject({
+      violations: [
+        {
+          ruleId: 'clearance',
+          primitiveIds: ['e12', 'e34'],
+          nets: ['GND', 'USB_DP'],
+          net: 'GND',
+          pins: ['U2.5'],
+          component: 'e12',
+          page: 'page-1',
+          location: { x: 1, y: 2, layer: 'BottomLayer' },
+        },
+      ],
+    });
+  });
+
   it('counts flat aggregate groups without inventing leaf detail', async () => {
     const { operations, callFirst } = createSubject();
     callFirst.mockResolvedValue([

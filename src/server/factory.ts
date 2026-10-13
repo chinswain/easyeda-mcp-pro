@@ -21,6 +21,7 @@ import { startHotSwapWatcher } from '../bridge/hotswap-watcher.js';
 import { registerBuiltinTools } from '../tools/register.js';
 import { registerProjectResourcesAndPrompts } from './resources-prompts.js';
 import { RemoteGateway } from '../remote/gateway.js';
+import { readExpectedExtensionBuildId } from '../bridge/extension-build.js';
 
 import { LcscClient } from '../vendors/lcsc/client.js';
 import { JlcpcbClient } from '../vendors/jlcpcb/client.js';
@@ -28,6 +29,7 @@ import { MouserClient } from '../vendors/mouser/client.js';
 import { DigiKeyClient } from '../vendors/digikey/client.js';
 import { createFileVendorCache } from '../vendors/cache.js';
 import { configureVendorRateLimit } from '../vendors/base-http-client.js';
+import { ensureDocumentFocus } from './auto-focus.js';
 
 export interface CreateServerOptions {
   remoteGateway?: RemoteGateway;
@@ -46,6 +48,8 @@ export interface McpServerInstance {
   shutdown: () => Promise<void>;
 }
 
+const OWNERSHIP_RETRY_MS = 3_000;
+
 async function connectLocalBridge(
   bridge: BridgeManager | CdpBridgeManager,
   logger: ReturnType<typeof createLogger>,
@@ -60,6 +64,21 @@ async function connectLocalBridge(
       { ownerPid: ownershipConflict.ownerPid, ownerPort: ownershipConflict.ownerPort },
       'another process owns the local EasyEDA bridge listener; continuing with degraded diagnostics',
     );
+    // ponytail: retry the lock until the owner exits, so a blocked MCP client self-heals without a restart.
+    const timer = setInterval(() => {
+      if (bridge.state !== 'error') {
+        clearInterval(timer);
+        return;
+      }
+      bridge.connect().then(
+        () => {
+          logger.info('acquired the local EasyEDA bridge listener after retry');
+          clearInterval(timer);
+        },
+        () => undefined,
+      );
+    }, OWNERSHIP_RETRY_MS);
+    timer.unref();
   }
 }
 
@@ -112,6 +131,7 @@ export async function createServer(
 
   const storage = new Storage(config);
   storage.initialize();
+  const expectedExtensionBuildId = readExpectedExtensionBuildId();
 
   const context: ToolContext = {
     profile: config.TOOL_PROFILE as ToolProfile,
@@ -121,6 +141,7 @@ export async function createServer(
       },
       call: async (method, params, opts) => {
         logger.debug({ method }, 'bridge call');
+        await ensureDocumentFocus((m, p) => bridge.call(m, p), method, params);
         return bridge.call(method, params, opts);
       },
       get uptimeMs() {
@@ -155,6 +176,33 @@ export async function createServer(
       },
       get ownershipConflict() {
         return bridge instanceof BridgeManager ? bridge.ownershipConflict : undefined;
+      },
+      get role() {
+        return bridge instanceof BridgeManager ? bridge.role : undefined;
+      },
+      get ownerPid() {
+        return bridge instanceof BridgeManager ? bridge.ownerPid : undefined;
+      },
+      get attachedClients() {
+        return bridge instanceof BridgeManager ? bridge.attachedClients : undefined;
+      },
+      get reconnectAttempts() {
+        return bridge instanceof BridgeManager ? bridge.reconnectAttemptCount : undefined;
+      },
+      get lastDisconnectMs() {
+        return bridge instanceof BridgeManager ? bridge.lastDisconnectMs : undefined;
+      },
+      get reconnecting() {
+        return bridge instanceof BridgeManager ? bridge.reconnecting : undefined;
+      },
+      get nextReconnectAtMs() {
+        return bridge instanceof BridgeManager ? bridge.nextReconnectAtMs : undefined;
+      },
+      get extensionBuildId() {
+        return bridge instanceof BridgeManager ? bridge.extensionBuildId : undefined;
+      },
+      get expectedExtensionBuildId() {
+        return expectedExtensionBuildId;
       },
     },
     config: {

@@ -173,6 +173,24 @@ describe('canvas operations', () => {
     expect(callFirst).toHaveBeenCalledTimes(2);
   });
 
+  it('refuses to capture while the EasyEDA window is hidden', async () => {
+    const callFirst = vi.fn();
+    const ops = createCanvasOperations({
+      callFirst,
+      normalizeBinaryResult: vi.fn(),
+      createBridgeError: (code: string, message: string) =>
+        Object.assign(new Error(message), { code }),
+      animationRoot: { document: { visibilityState: 'hidden' } },
+    } as never);
+    await expect(ops.capture({})).rejects.toMatchObject({ code: 'EASYEDA_API_ERROR' });
+    await expect(ops.captureRegion({ left: 0, right: 1, top: 1, bottom: 0 })).rejects.toMatchObject(
+      {
+        code: 'EASYEDA_API_ERROR',
+      },
+    );
+    expect(callFirst).not.toHaveBeenCalled();
+  });
+
   it('forwards locate coordinates without inventing defaults', async () => {
     const callFirst = vi.fn(async () => 'located');
     const operations = makeOperations({ callFirst });

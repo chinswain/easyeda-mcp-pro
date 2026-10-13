@@ -920,6 +920,7 @@ function sendHandshake(): void {
     easyedaVersion: getEasyedaVersion(),
     devMode: false,
     loaderVersion: EXTENSION_INFO.extensionVersion,
+    buildId: activeDispatcher.buildId,
   };
   // Lets the server fail loudly when this extension serves stale dispatch
   // logic. Computed asynchronously at startup/swap; omitted if not ready yet.
@@ -1055,6 +1056,14 @@ function handleMessage(raw: string): InboundMessageType {
     case 'request':
       void handleRequest(message as BridgeRequest);
       return 'request';
+    case 'replaced':
+      // Another EasyEDA tab took the bridge. Stay down; reconnecting would
+      // replace it in turn and loop. Connect from the menu to take it back.
+      log('Bridge taken over by another EasyEDA instance; auto-reconnect paused');
+      manualDisconnectRequested = true;
+      stopHeartbeat();
+      closeSocket();
+      return 'ignored';
     default:
       return 'ignored';
   }

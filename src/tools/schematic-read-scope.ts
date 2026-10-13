@@ -145,7 +145,8 @@ export function schematicReadBridgeParams(
 }
 
 export function componentReadScope(scope: SchematicReadScope | undefined) {
-  if (!scope) return { bridgeParams: {} };
+  // EasyEDA's recursive getAll spans every schematic in the project, not this board's pages.
+  if (!scope) return { bridgeParams: { allPages: false } };
   return {
     bridgeParams: { scope, allPages: scope === 'all_pages' },
     readScope: readScope(scope, 'SCH_PrimitiveComponent.getAll'),

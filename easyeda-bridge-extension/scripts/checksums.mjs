@@ -54,12 +54,21 @@ export async function createChecksumManifest({ root, packagePath, generatedAt })
       sha256: await sha256File(file),
     });
   }
+  let dispatcherBuildId;
+  try {
+    dispatcherBuildId = JSON.parse(
+      await readFile(join(root, 'dist', 'dispatcher.meta.json'), 'utf8'),
+    ).buildId;
+  } catch {
+    // meta file is optional for older builds
+  }
   return {
     schemaVersion: 1,
     generatedAt: generatedAt ?? getReproducibleDate({ root }).toISOString(),
     package: normalizePath(relative(join(root, '..'), packagePath)),
     packageSize: packageInfo.size,
     packageSha256: await sha256File(packagePath),
+    ...(dispatcherBuildId ? { dispatcherBuildId } : {}),
     files,
   };
 }

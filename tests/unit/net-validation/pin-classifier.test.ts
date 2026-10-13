@@ -9,6 +9,7 @@ describe('classifyNetType', () => {
     expect(classifyNetType('3V3')).toBe('power');
     expect(classifyNetType('VCC')).toBe('power');
     expect(classifyNetType('VIN')).toBe('power');
+    expect(classifyNetType('VSYS')).toBe('power');
   });
 
   it('classifies ground names', () => {
@@ -45,7 +46,7 @@ describe('classifyPinElectricalType', () => {
   });
 
   it('falls back to native pinType only when the name gives no signal', () => {
-    expect(classifyPinElectricalType('1', 'IN')).toBe('input');
+    expect(classifyPinElectricalType('1', 'IN')).toBeUndefined(); // resistors/LEDs report IN
     expect(classifyPinElectricalType('1', 'OUT')).toBe('output');
   });
 

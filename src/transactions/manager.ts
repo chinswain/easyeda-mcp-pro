@@ -658,6 +658,23 @@ export class TransactionManager {
     return this.finalizeRollback(transaction, restoredOperationIds, failedOperationIds);
   }
 
+  /** Release the document lock held by a transaction whose rollback failed. Its unresolved
+   *  writes stay in the document; the caller fixes them by hand. */
+  abandon(transactionId: string): TransactionRecord {
+    const transaction = this.mutable(transactionId);
+    if (transaction.state !== 'failed') {
+      throw new TransactionError(
+        'TRANSACTION_INVALID_STATE',
+        `Only a failed transaction can be abandoned; ${transactionId} is ${transaction.state}. Roll it back instead.`,
+      );
+    }
+    transaction.state = 'expired';
+    transaction.error = `Abandoned with unresolved writes: ${transaction.error ?? 'rollback failed'}`;
+    transaction.updatedAt = nowIso();
+    this.activeByDocument.delete(transaction.documentId);
+    return cloneTransaction(transaction);
+  }
+
   private expireStaleTransactions(): void {
     const now = Date.now();
     for (const transaction of this.transactions.values()) {

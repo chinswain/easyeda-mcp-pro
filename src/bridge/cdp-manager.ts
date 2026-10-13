@@ -954,9 +954,9 @@ export class CdpBridgeManager extends EventEmitter {
             ['SCH_PrimitiveComponent.getAllPinsByPrimitiveId','sch_PrimitiveComponent.getAllPinsByPrimitiveId'],
             params.primitiveId,
           );
-          const matches = (Array.isArray(pins) ? pins : []).filter(
-            (pin) => String(readState(pin, 'PinNumber') ?? '') === String(params.pinNumber),
-          );
+          const matches = (Array.isArray(pins) ? pins : []).filter((pin) => params.pinPrimitiveId
+            ? String(readState(pin, 'PrimitiveId') ?? '') === String(params.pinPrimitiveId)
+            : String(readState(pin, 'PinNumber') ?? '') === String(params.pinNumber));
           if (matches.length === 0) {
             throw bridgeError(
               'PIN_NOT_FOUND',
@@ -968,7 +968,9 @@ export class CdpBridgeManager extends EventEmitter {
             throw bridgeError(
               'PIN_AMBIGUOUS',
               'Pin number "' + params.pinNumber + '" matched ' + matches.length + ' pins on component "' + params.primitiveId + '"',
-              { componentPrimitiveId: params.primitiveId, pinNumber: params.pinNumber, matchCount: matches.length },
+              { componentPrimitiveId: params.primitiveId, pinNumber: params.pinNumber, matchCount: matches.length,
+                candidatePinPrimitiveIds: matches.map((pin) => String(readState(pin, 'PrimitiveId') ?? '')),
+                hint: 'Retry with pinPrimitiveId set to one of candidatePinPrimitiveIds.' },
             );
           }
           const pin = matches[0];

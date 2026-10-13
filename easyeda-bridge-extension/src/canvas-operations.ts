@@ -3,6 +3,7 @@ import type { BinaryResultNormalizer } from './binary-result.js';
 
 export interface CanvasAnimationRoot {
   requestAnimationFrame?: (callback: () => void) => number;
+  document?: { visibilityState?: string };
 }
 
 export interface CanvasOperationDependencies {
@@ -81,7 +82,20 @@ export function createCanvasOperations({
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
 
+  // A hidden (minimized/covered) EasyEDA window stops repainting, so every capture returns the
+  // last painted frame whatever the region (verified live). Refuse rather than return a stale image.
+  function assertCanvasVisible(): void {
+    if (animationRoot.document?.visibilityState === 'hidden') {
+      throw createBridgeError(
+        'EASYEDA_API_ERROR',
+        'EasyEDA window is hidden, so the canvas is not repainting and captures would be stale.',
+        'Restore the EasyEDA window (not minimized) and retry the capture.',
+      );
+    }
+  }
+
   async function capture(params: Record<string, unknown>): Promise<unknown> {
+    assertCanvasVisible();
     const tabId = typeof params.tabId === 'string' ? params.tabId : undefined;
     const blob = await callFirst(['DMT_EditorControl.getCurrentRenderedAreaImage'], tabId);
     return normalizeBinaryResult(blob, 'capture.png');
@@ -89,6 +103,7 @@ export function createCanvasOperations({
 
   async function captureRegion(params: Record<string, unknown>): Promise<unknown> {
     const region = normalizeCanvasRegion(params as unknown as CanvasRegion);
+    assertCanvasVisible();
     const tabId = params.tabId;
     const zoomed = await callFirst(
       ['DMT_EditorControl.zoomToRegion'],

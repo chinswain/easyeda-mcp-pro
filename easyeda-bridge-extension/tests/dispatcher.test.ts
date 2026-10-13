@@ -149,7 +149,7 @@ describe('createDispatcher', () => {
       dispatcher.dispatch('board.exportGerbers', { projectId: 'project-1', layers: 'all' }),
     ).resolves.toEqual({
       kind: 'gerbers',
-      params: 'project-1',
+      params: undefined,
     });
     await expect(
       dispatcher.dispatch('pcb.exportRouteContext', { fileName: 'board.dsn' }),
@@ -158,7 +158,7 @@ describe('createDispatcher', () => {
       dispatcher.dispatch('export.pickPlace', { projectId: 'project-1', format: 'csv' }),
     ).resolves.toEqual({
       kind: 'pick-place',
-      params: 'project-1',
+      params: undefined,
     });
     await expect(dispatcher.dispatch('export.pdf', { what: 'board' })).resolves.toEqual({
       kind: 'pdf',
@@ -169,9 +169,9 @@ describe('createDispatcher', () => {
       params: { format: 'spice' },
     });
 
-    expect(getGerberFile).toHaveBeenCalledWith('project-1');
+    expect(getGerberFile).toHaveBeenCalledWith(undefined);
     expect(getDsnFile).toHaveBeenCalledWith('board.dsn');
-    expect(getPickAndPlaceFile).toHaveBeenCalledWith('project-1');
+    expect(getPickAndPlaceFile).toHaveBeenCalledWith(undefined);
     expect(getPdfFile).toHaveBeenCalledWith({ what: 'board' });
     expect(getNetlist).toHaveBeenCalledWith({ format: 'spice' });
   });
@@ -279,8 +279,18 @@ describe('createDispatcher', () => {
         pinNumber: '9',
         noConnected: true,
       }),
-    ).rejects.toMatchObject({ code: 'PIN_AMBIGUOUS' });
+    ).rejects.toMatchObject({
+      code: 'PIN_AMBIGUOUS',
+      data: { candidatePinPrimitiveIds: ['pin-a', 'pin-b'] },
+    });
     expect(modify).not.toHaveBeenCalled();
+
+    const picked = (await ambiguous.dispatch('schematic.getPinNoConnect', {
+      primitiveId: 'comp-3',
+      pinNumber: '9',
+      pinPrimitiveId: 'pin-b',
+    })) as { pinPrimitiveId: string };
+    expect(picked.pinPrimitiveId).toBe('pin-b');
   });
 
   it('does not stringify object-valued native pin identifiers or names', async () => {
@@ -362,6 +372,29 @@ describe('createDispatcher', () => {
     await expect(dispatcher.dispatch('nope.nothing')).rejects.toMatchObject({
       code: 'METHOD_NOT_ALLOWED',
     });
+  });
+
+  it('inverts rotation for createNetFlag and createNetPort, which rotate the opposite way', async () => {
+    const createNetFlag = vi.fn(async () => ({ primitiveId: 'f1' }));
+    const createNetPort = vi.fn(async () => ({ primitiveId: 'p1' }));
+    const dispatcher = createDispatcher(
+      makeToolkit({ SCH_PrimitiveComponent: { createNetFlag, createNetPort } }),
+    );
+    await dispatcher.dispatch('schematic.createNetFlag', {
+      netName: 'VCC',
+      x: 0,
+      y: 0,
+      rotation: 90,
+      identification: 'Power',
+    });
+    await dispatcher.dispatch('schematic.createNetPort', {
+      netName: 'IO',
+      x: 0,
+      y: 0,
+      rotation: 0,
+    });
+    expect(createNetFlag).toHaveBeenCalledWith('Power', 'VCC', 0, 0, 270);
+    expect(createNetPort.mock.calls[0]?.[4]).toBe(0);
   });
 
   it('resolves EasyEDA classes through the toolkit, not bare globals', async () => {
@@ -1577,9 +1610,7 @@ describe('createDispatcher', () => {
       .mockResolvedValueOnce([1, 2, 3]);
     const padGetAll = vi
       .fn()
-      .mockResolvedValueOnce([
-        { getState_HoleType: () => 'MountingHole', getState_HoleSize: () => 1 },
-      ])
+      .mockResolvedValueOnce([{ getState_Hole: () => ['ROUND', 126], getState_Net: () => '' }])
       .mockResolvedValueOnce([1, 2]);
     const dispatcher = createDispatcher(
       makeToolkit({
@@ -2384,7 +2415,7 @@ describe('createDispatcher', () => {
         primitiveId: 'w1',
         primitiveKind: 'wire',
         property: {
-          line: [0, 0, 20, 0],
+          line: [[0, 0, 20, 0]],
           net: 'NET_A',
           color: '#000000',
           lineWidth: 1,
@@ -2799,7 +2830,7 @@ describe('createDispatcher', () => {
         snapshot: {
           primitiveId: 'wire-new',
           primitiveKind: 'wire',
-          property: { line: [0, 0, 10, 0], net: 'NET_A' },
+          property: { line: [[0, 0, 10, 0]], net: 'NET_A' },
         },
       });
     });
@@ -3004,12 +3035,12 @@ describe('createDispatcher', () => {
           content: 'NEW TITLE',
           textColor: '#FF0000',
           underLine: true,
-          alignMode: 3,
           fontName: 'Arial',
           fontSize: 20,
         }),
       );
       const nativeProperty = textModify.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(nativeProperty).not.toHaveProperty('alignMode');
       expect(nativeProperty).not.toHaveProperty('color');
       expect(nativeProperty).not.toHaveProperty('underline');
     });

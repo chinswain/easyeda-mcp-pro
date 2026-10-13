@@ -272,6 +272,30 @@ describe('TransactionManager', () => {
     expect(manager.begin({ documentId: 'doc-1' }).state).toBe('active');
   });
 
+  it('abandons only a failed transaction, releasing its document lock', async () => {
+    const manager = new TransactionManager();
+    const transaction = manager.begin({ documentId: 'doc-1' });
+    let value = 'before';
+    await manager.runModify(transaction.id, 'p1', {
+      getSnapshot: async () => ({ value }),
+      apply: async () => {
+        value = 'after';
+      },
+      restore: async () => undefined,
+    });
+    expect(() => manager.abandon(transaction.id)).toThrow('Only a failed transaction');
+
+    await expect(
+      manager.rollback(transaction.id, {
+        restore: async () => {
+          throw new Error('restore failed');
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'TRANSACTION_ROLLBACK_FAILED' });
+    expect(manager.abandon(transaction.id).state).toBe('expired');
+    expect(manager.begin({ documentId: 'doc-1' }).state).toBe('active');
+  });
+
   it('allows a later manual rollback to recover an operation whose automatic compensation failed', async () => {
     const manager = new TransactionManager();
     const transaction = manager.begin({ documentId: 'doc-1' });

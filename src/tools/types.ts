@@ -40,8 +40,9 @@ export interface ToolDefinition<
    *  When true the runtime requires explicit acknowledgment according to confirmationPolicy. */
   confirmWrite: boolean;
   /** Confirmation timing. Defaults to `always`; `apply-mode` permits a non-mutating
-   *  `mode=preview` call while still requiring confirmWrite=true for `mode=apply`. */
-  confirmationPolicy?: 'always' | 'apply-mode';
+   *  `mode=preview` call while still requiring confirmWrite=true for `mode=apply`;
+   *  `handler` leaves the check to the tool, which knows which inputs mutate. */
+  confirmationPolicy?: 'always' | 'apply-mode' | 'handler';
   /** Explicit side-effect category. Omitted definitions fall back to confirmWrite-based classification. */
   sideEffect?: ToolSideEffect;
   /** Logical group for UI organisation and documentation (e.g. 'schematic', 'bom', 'board') */
@@ -87,6 +88,13 @@ export interface BridgeDiagnosticsSnapshot {
   blocked_by_other_instance?: boolean;
   owner_pid?: number;
   owner_port?: number;
+  role?: 'owner' | 'attached' | 'none';
+  attached_clients?: number;
+  reconnect_attempts?: number;
+  last_disconnect_ms?: number;
+  extension_build_id?: string;
+  expected_extension_build_id?: string;
+  extension_build_mismatch?: boolean;
 }
 
 export interface ToolContext {
@@ -114,6 +122,19 @@ export interface ToolContext {
     registryMismatch?: boolean;
     /** Details about a live local process that currently owns the bridge listener. */
     ownershipConflict?: BridgeOwnershipConflict;
+    /** owner = this process holds the plugin socket; attached = relaying through the owner over loopback. */
+    role?: 'owner' | 'attached' | 'none';
+    ownerPid?: number;
+    attachedClients?: number;
+    reconnectAttempts?: number;
+    lastDisconnectMs?: number;
+    /** True while an automatic reconnect is pending after the plugin dropped. */
+    reconnecting?: boolean;
+    nextReconnectAtMs?: number;
+    /** Dispatcher build id reported by the installed plugin. */
+    extensionBuildId?: string;
+    /** Dispatcher build id shipped with this server package (from the checksums manifest). */
+    expectedExtensionBuildId?: string;
   };
   config: {
     bridgeTimeoutMs: number;

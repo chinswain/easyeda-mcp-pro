@@ -1,4 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { type ToolDefinition, type ToolContext, type ToolSideEffect } from './types.js';
 import {
   registeredOutputSchema,
@@ -15,6 +17,7 @@ import { getGlobalMetricsCollector, type ObservabilityCategory } from '../observ
 import { type RemoteIdentity } from '../remote/scope.js';
 import { type RemoteRiskLevel } from '../remote/protocol.js';
 import { type RemoteGatewayToolResult } from '../remote/gateway.js';
+import { lenientInputSchema, normalizeToolInput } from './input-normalize.js';
 
 // ── Structured error codes ────────────────────────────────────────────────
 
@@ -55,9 +58,10 @@ const REMOTE_RELAY_CONTROL_SHAPE = {
 };
 
 function registeredInputSchema(tool: ToolDefinition, context: ToolContext): z.ZodType {
-  if (context.config.MCP_BRIDGE_BACKEND !== 'remote_relay') return tool.inputSchema;
+  if (context.config.MCP_BRIDGE_BACKEND !== 'remote_relay')
+    return lenientInputSchema(tool.inputSchema);
   if (tool.inputSchema instanceof z.ZodObject) {
-    return tool.inputSchema.safeExtend(REMOTE_RELAY_CONTROL_SHAPE);
+    return lenientInputSchema(tool.inputSchema.safeExtend(REMOTE_RELAY_CONTROL_SHAPE));
   }
   return z.intersection(tool.inputSchema, z.object(REMOTE_RELAY_CONTROL_SHAPE));
 }
@@ -457,6 +461,7 @@ function writePlanningResponse(
 function confirmWriteResponse(tool: ToolDefinition, raw: Record<string, unknown>) {
   if (!tool.confirmWrite || raw.confirmWrite === true) return undefined;
   if (tool.confirmationPolicy === 'apply-mode' && raw.mode !== 'apply') return undefined;
+  if (tool.confirmationPolicy === 'handler') return undefined;
   return structuredErrorResponse({
     errorCode: ErrorCodes.CONFIRM_WRITE_REQUIRED,
     message: `Tool "${tool.name}" can mutate design state and requires confirmWrite=true.`,
@@ -496,14 +501,69 @@ async function executeToolWithMetrics(
   }
 }
 
-function formatToolSuccess(tool: ToolDefinition, result: unknown) {
+/** Results above this many JSON bytes are written to disk and replaced by a summary. */
+export const RESULT_SPILL_BYTES = 20_000;
+
+function summarizeValue(value: unknown): unknown {
+  if (Array.isArray(value)) return { count: value.length, sample: value.slice(0, 3) };
+  if (value && typeof value === 'object') return { keys: Object.keys(value as object) };
+  return typeof value === 'string' && value.length > 200 ? `${value.slice(0, 200)}...` : value;
+}
+
+/** Write an oversized result to `<artifactDir>/tool-results/` and return the summary to send instead. */
+export function spillResult(
+  toolName: string,
+  data: unknown,
+  text: string,
+  artifactDir: string,
+): Record<string, unknown> | undefined {
+  if (text.length <= RESULT_SPILL_BYTES) return undefined;
+  const dir = path.join(artifactDir, 'tool-results');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${toolName}-${Date.now()}.json`);
+  fs.writeFileSync(file, text, 'utf8');
+  const record =
+    data && typeof data === 'object' && !Array.isArray(data)
+      ? (data as Record<string, unknown>)
+      : { value: data };
+  return {
+    spilled_to_file: true,
+    path: path.resolve(file),
+    bytes: Buffer.byteLength(text, 'utf8'),
+    tool: toolName,
+    hint: `Result exceeded ${RESULT_SPILL_BYTES} bytes. Read the file, or narrow the query with filters, fields, limit/offset.`,
+    summary: Object.fromEntries(Object.entries(record).map(([k, v]) => [k, summarizeValue(v)])),
+  };
+}
+
+function formatToolSuccess(tool: ToolDefinition, result: unknown, artifactDir?: string) {
   const output = tool.outputSchema.safeParse(result);
   if (!output.success) {
-    return structuredErrorResponse({
+    const record = rawRecord(result);
+    // A structured failure ({success:false,...}) rarely carries every field a
+    // success must; surface it as the error it is instead of masking it.
+    if (record.success === false || record.ok === false) {
+      return {
+        isError: true,
+        structuredContent: record,
+        content: [{ type: 'text' as const, text: JSON.stringify(record, null, 2) }],
+      };
+    }
+    const issues = output.error.issues
+      .slice(0, 5)
+      .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+      .join('; ');
+    const response = structuredErrorResponse({
       errorCode: ErrorCodes.TOOL_OUTPUT_INVALID,
-      message: `Tool "${tool.name}" returned output that does not match its declared outputSchema.`,
-      details: { toolName: tool.name, issues: output.error.issues },
+      message: `Tool "${tool.name}" returned output that does not match its declared outputSchema (${issues}). Raw result follows.`,
+      details: { toolName: tool.name, issues: output.error.issues, result },
     });
+    // ponytail: the read usually worked; hand the data over rather than lose it.
+    response.content.push({
+      type: 'text' as const,
+      text: JSON.stringify(result, null, 2).slice(0, 50_000),
+    });
+    return response;
   }
 
   const images = tool.imageContent?.(output.data) ?? [];
@@ -511,6 +571,9 @@ function formatToolSuccess(tool: ToolDefinition, result: unknown) {
     images.length > 0 && tool.imageContentOmitFields?.length
       ? omitFields(output.data, tool.imageContentOmitFields)
       : output.data;
+  const text = JSON.stringify(responseData, null, 2);
+  const spilled = artifactDir ? spillResult(tool.name, responseData, text, artifactDir) : undefined;
+  // ponytail: structuredContent must always satisfy outputSchema (clients validate it); only the text is spilled.
   const structuredContent =
     typeof responseData === 'object' && responseData !== null
       ? (responseData as Record<string, unknown>)
@@ -518,7 +581,7 @@ function formatToolSuccess(tool: ToolDefinition, result: unknown) {
   return {
     structuredContent,
     content: [
-      { type: 'text' as const, text: JSON.stringify(responseData, null, 2) },
+      { type: 'text' as const, text: spilled ? JSON.stringify(spilled, null, 2) : text },
       ...images.map((image) => ({
         type: 'image' as const,
         data: image.data,
@@ -570,6 +633,7 @@ async function handleRegisteredToolCall(
   extra: unknown,
 ) {
   try {
+    input = normalizeToolInput(tool.inputSchema, input);
     const raw = getRawInput(input);
     const writeMode = parseWriteMode(raw);
     if (writeMode instanceof ZodError) return invalidWriteModeResponse(tool, writeMode);
@@ -586,7 +650,7 @@ async function handleRegisteredToolCall(
 
     const parsed = tool.inputSchema.parse(domainInputForTool(context, input) ?? {});
     const result = await executeToolWithMetrics(context, tool, raw, extra, parsed);
-    return formatToolSuccess(tool, result);
+    return formatToolSuccess(tool, result, context.config.artifactDir);
   } catch (err) {
     return toolFailureResponse(tool, context, err);
   }

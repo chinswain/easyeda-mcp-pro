@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { z } from 'zod';
+import { sha256File } from './agentic-common.js';
 import { type ToolDefinition, type ToolContext } from './types.js';
 import { type EnvConfig } from '../config/env.js';
 import { validatePcbConstraints } from '../pcb-constraints/index.js';
@@ -67,6 +68,8 @@ function writeExportPayload(
   if (typeof binary.base64 === 'string') {
     buffer = Buffer.from(binary.base64, 'base64');
     fileName = binary.fileName || defaultFileName;
+    // EasyEDA names some exports without an extension (e.g. "Pick_Place").
+    if (!path.extname(fileName)) fileName += path.extname(defaultFileName);
   } else {
     buffer = Buffer.from(JSON.stringify(data, null, 2), 'utf-8');
   }
@@ -435,6 +438,7 @@ function registerExportTools(
       project_id: z.string(),
       artifact_path: z.string().optional(),
       byte_length: z.number().int().nonnegative().optional(),
+      sha256: z.string().optional(),
       file_count: z.number().int().nonnegative().optional(),
       exported: z.boolean(),
       blocked_by_production_review: z.boolean().optional(),
@@ -500,6 +504,7 @@ function registerExportTools(
           project_id: projectId,
           artifact_path: written.filePath,
           byte_length: written.byteLength,
+          sha256: written.filePath ? sha256File(written.filePath) : undefined,
           exported: true,
           production_review: productionReviewResult,
         };
@@ -545,6 +550,7 @@ function registerExportTools(
       format: z.string(),
       file_path: z.string().optional(),
       byte_length: z.number().int().nonnegative().optional(),
+      sha256: z.string().optional(),
       component_count: z.number().int().nonnegative().optional(),
       exported: z.boolean(),
       not_available: z.boolean().optional(),
@@ -581,6 +587,7 @@ function registerExportTools(
           format,
           file_path: written.filePath,
           byte_length: written.byteLength,
+          sha256: written.filePath ? sha256File(written.filePath) : undefined,
           exported: true,
         };
       } catch (err) {
@@ -623,6 +630,7 @@ function registerExportTools(
       orientation: z.string(),
       file_path: z.string().optional(),
       byte_length: z.number().int().nonnegative().optional(),
+      sha256: z.string().optional(),
       pages: z.number().int().nonnegative().optional(),
       exported: z.boolean(),
       not_available: z.boolean().optional(),
@@ -670,6 +678,7 @@ function registerExportTools(
           orientation,
           file_path: written.filePath,
           byte_length: written.byteLength,
+          sha256: written.filePath ? sha256File(written.filePath) : undefined,
           exported: true,
         };
       } catch (err) {
@@ -712,6 +721,7 @@ function registerExportTools(
       format: z.string(),
       file_path: z.string().optional(),
       byte_length: z.number().int().nonnegative().optional(),
+      sha256: z.string().optional(),
       net_count: z.number().int().nonnegative().optional(),
       exported: z.boolean(),
       not_available: z.boolean().optional(),
@@ -749,6 +759,7 @@ function registerExportTools(
           format,
           file_path: written.filePath,
           byte_length: written.byteLength,
+          sha256: written.filePath ? sha256File(written.filePath) : undefined,
           net_count: netCount,
           exported: true,
         };
